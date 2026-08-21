@@ -79,6 +79,9 @@ return {
         max-height: 4.5em;
         overflow: hidden;
         word-break: break-word;
+        cursor: move;
+        -webkit-user-select: none;
+        user-select: none;
       }
       [data-dsh-translator-body] {
         padding: 2px 12px 10px;
@@ -129,6 +132,11 @@ return {
     `)
 
     let requestSeq = 0
+    let selHideTimer = null
+    let btnSuppressed = false
+    let dragging = false
+    let dragStartX = 0, dragStartY = 0, dragLeft = 0, dragTop = 0
+    let suppressNextUp = false
     let unmounted = false
     let stateRef = { card: null }
     const CARD_W = 320
@@ -233,8 +241,31 @@ return {
       const [card, setCard] = React.useState(null)
       stateRef.card = card
 
+      function beginDrag(e) {
+        if (!stateRef.card) return
+        dragging = true
+        dragStartX = e.clientX
+        dragStartY = e.clientY
+        dragLeft = stateRef.card.left
+        dragTop = stateRef.card.top
+        e.preventDefault()
+      }
+
+      function onDragMove(e) {
+        if (!dragging || !stateRef.card) return
+        const c = stateRef.card
+        const left = clamp(dragLeft + (e.clientX - dragStartX), 0, Math.max(0, window.innerWidth - c.width))
+        const top = clamp(dragTop + (e.clientY - dragStartY), 0, Math.max(0, window.innerHeight - 80))
+        setCard(prev => prev && prev.reqId === c.reqId ? { ...prev, left, top, dragged: true } : prev)
+      }
+
+      function onDragEnd() {
+        if (dragging) { dragging = false; suppressNextUp = true }
+      }
+
       React.useEffect(() => {
         function refreshButton() {
+          if (btnSuppressed) return
           const info = currentSelection()
           if (!info) {
             setBtn(null)
@@ -248,7 +279,10 @@ return {
         }
 
         function onMouseUp(e) {
+          if (suppressNextUp) { suppressNextUp = false; return }
+          if (dragging) return
           if (isInsideRoot(e.target)) return
+          btnSuppressed = false
           const info = currentSelection()
           if (!info) {
             cancelLoadingCard(stateRef.card)
@@ -268,18 +302,24 @@ return {
           }
           const sel = window.getSelection()
           if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
-            setBtn(null)
+            // Debounce: a streaming DOM update can transiently collapse the
+            // selection; only hide if it stays empty for a moment.
+            if (selHideTimer) clearTimeout(selHideTimer)
+            selHideTimer = setTimeout(() => { setBtn(null) }, 200)
             return
           }
+          if (selHideTimer) { clearTimeout(selHideTimer); selHideTimer = null }
           const range = sel.getRangeAt(0)
           if (isInsideRoot(range.startContainer) || isInsideRoot(range.endContainer)) {
             setBtn(null)
             return
           }
+          refreshButton()
         }
 
         function onKeyDown(e) {
           if (e.key === 'Escape') {
+            btnSuppressed = false
             cancelLoadingCard(stateRef.card)
             setCard(null)
             setBtn(null)
@@ -288,9 +328,21 @@ return {
 
         function onScroll(e) {
           if (isInsideRoot(e.target)) return
-          cancelLoadingCard(stateRef.card)
-          setBtn(null)
-          setCard(null)
+          if (btnSuppressed) return
+          // Streaming output triggers continuous scroll events. Do not dismiss
+          // the UI: reposition the button while the selection stays on screen,
+          // hide only when it scrolls out of view. The card is fixed and stays.
+          const info = currentSelection()
+          if (!info) { setBtn(null); return }
+          const r = info.rect
+          if (r.bottom < -20 || r.top > window.innerHeight + 20 || r.right < -20 || r.left > window.innerWidth + 20) {
+            setBtn(null)
+            return
+          }
+          const left = clamp(r.right - 8 - 32, 4, window.innerWidth - 36)
+          let top = r.top - 32 - 6
+          if (top < 4) top = r.bottom + 6
+          setBtn({ left, top, text: info.text, rect: r })
         }
 
         function onResize() {
@@ -299,7 +351,9 @@ return {
           setCard(null)
         }
 
+        document.addEventListener('mouseup', onDragEnd)
         document.addEventListener('mouseup', onMouseUp)
+        document.addEventListener('mousemove', onDragMove)
         document.addEventListener('selectionchange', onSelectionChange)
         document.addEventListener('keydown', onKeyDown)
         document.addEventListener('scroll', onScroll, true)
@@ -307,7 +361,9 @@ return {
         return () => {
           unmounted = true
           cancelLoadingCard(stateRef.card)
+          document.removeEventListener('mouseup', onDragEnd)
           document.removeEventListener('mouseup', onMouseUp)
+          document.removeEventListener('mousemove', onDragMove)
           document.removeEventListener('selectionchange', onSelectionChange)
           document.removeEventListener('keydown', onKeyDown)
           document.removeEventListener('scroll', onScroll, true)
@@ -335,6 +391,7 @@ return {
       function openPopup() {
         if (!btn) return
         // The button is a one-shot trigger: hide it once the card takes over.
+        btnSuppressed = true
         setBtn(null)
         const rect = btn.rect
         const maxH = Math.min(window.innerHeight * 0.6, 420)
@@ -352,7 +409,7 @@ return {
       // otherwise an above-placed card leaves a gap between its bottom and the
       // selection when the real height is smaller than the estimate.
       React.useEffect(() => {
-        if (!card || !card.anchor) return
+        if (!card || !card.anchor || card.dragged) return
         const el = document.querySelector('[data-dsh-translator-card]')
         if (!el) return
         const h = el.offsetHeight
@@ -394,13 +451,13 @@ return {
         if (card.status === 'error') {
           footChildren.push(React.createElement('button', { key: 'retry', 'data-dsh-translator-act': '', onClick: () => translate(card.text) }, '重试'))
         }
-        footChildren.push(React.createElement('button', { key: 'close', 'data-dsh-translator-act': '', 'data-dsh-translator-close': '', onClick: () => { cancelLoadingCard(stateRef.card); setCard(null); refreshButton() } }, '关闭'))
+        footChildren.push(React.createElement('button', { key: 'close', 'data-dsh-translator-act': '', 'data-dsh-translator-close': '', onClick: () => { btnSuppressed = false; cancelLoadingCard(stateRef.card); setCard(null); refreshButton() } }, '关闭'))
         children.push(React.createElement('div', {
           key: 'card',
           'data-dsh-translator-card': '',
           style: { left: card.left + 'px', top: card.top + 'px', width: card.width + 'px' },
         },
-          React.createElement('div', { 'data-dsh-translator-source': '' }, card.text),
+          React.createElement('div', { 'data-dsh-translator-source': '', onMouseDown: beginDrag }, card.text),
           React.createElement('div', { 'data-dsh-translator-body': '' }, ...bodyChildren),
           React.createElement('div', { 'data-dsh-translator-foot': '' }, ...footChildren),
         ))
