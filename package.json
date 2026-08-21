@@ -1,0 +1,54 @@
+{
+  "name": "@nicearrack/dsh-translator",
+  "version": "0.1.0",
+  "description": "Youdao-style word-selection translation for the DSH web GUI. Select text anywhere, click the floating button, get a translation from the harness's own LLM — no API keys, no third-party endpoints. 有道风格划词翻译：DSH Web GUI 里划选文本即现悬浮「译」按钮，点击由 harness 自带大模型翻译，无需 API key、不依赖第三方接口。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.js",
+    "prepare": "node scripts/build.js",
+    "test:host": "node scripts/host-sim.mjs",
+    "check": "node --check src/index.js && node -e \"const fs=require('fs');for(const f of ['src/host.js','src/client.js']){new Function(fs.readFileSync(f,'utf8'));}console.log('syntax OK') \""
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "translation",
+    "word-selection",
+    "划词翻译"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nicearrack/dsh-translator.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  }
+}

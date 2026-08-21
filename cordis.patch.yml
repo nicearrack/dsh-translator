@@ -1,0 +1,8 @@
+# dsh-translator bundle patch
+#
+# Applied when the profile lists this bundle (dsh.bundle.patch). Installed via:
+#
+#   dsh plugin --profile <name> add @nicearrack/dsh-translator
+- insert:
+    - id: dsh-translator
+      name: '@nicearrack/dsh-translator'

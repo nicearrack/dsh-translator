@@ -1,0 +1,14 @@
+# dependencies / build output
+node_modules/
+lib/
+dist/
+
+# stability harness (playwright runtime, downloaded browsers, reports)
+stability/
+
+# editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.e2e-home/
