@@ -71,6 +71,32 @@ return {
         max-height: 60vh;
         overflow: hidden;
       }
+      [data-dsh-translator-actions] {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin-left: auto;
+        flex: 0 0 auto;
+      }
+      [data-dsh-translator-actions] button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2px;
+        border: none;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--dsw-alias-label-secondary);
+        cursor: pointer;
+        pointer-events: auto;
+      }
+      [data-dsh-translator-actions] button:focus-visible {
+        outline: 2px solid var(--dsw-alias-brand-primary);
+        outline-offset: 1px;
+      }
+      [data-dsh-translator-actions] [data-dsh-translator-pin="on"] {
+        color: var(--dsw-alias-brand-primary);
+      }
       [data-dsh-translator-source] {
         padding: 10px 12px 6px;
         color: var(--dsw-alias-label-secondary);
@@ -95,7 +121,7 @@ return {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 6px 12px 10px;
+        padding: 6px 10px 10px;
         border-top: 1px solid var(--dsw-alias-border-l1);
         font-size: 12px;
         line-height: 1.4;
@@ -236,13 +262,27 @@ return {
       }
     }
 
+    function PinIcon(props) {
+      return React.createElement('svg', { viewBox: '0 0 24 24', width: 13, height: 13, 'aria-hidden': true, fill: props.filled ? 'currentColor' : 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' },
+        React.createElement('path', { d: 'M12 17v5' }),
+        React.createElement('path', { d: 'M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z' }),
+      )
+    }
+
+    function XIcon() {
+      return React.createElement('svg', { viewBox: '0 0 24 24', width: 13, height: 13, 'aria-hidden': true, fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' },
+        React.createElement('path', { d: 'M18 6 6 18' }),
+        React.createElement('path', { d: 'm6 6 12 12' }),
+      )
+    }
+
     function TranslatorRoot() {
       const [btn, setBtn] = React.useState(null)
       const [card, setCard] = React.useState(null)
       stateRef.card = card
 
       function beginDrag(e) {
-        if (!stateRef.card) return
+        if (!stateRef.card || stateRef.card.pinned) return
         dragging = true
         dragStartX = e.clientX
         dragStartY = e.clientY
@@ -287,11 +327,11 @@ return {
           if (!info) {
             cancelLoadingCard(stateRef.card)
             setBtn(null)
-            setCard(null)
+            if (!stateRef.card || !stateRef.card.pinned) setCard(null)
             return
           }
           cancelLoadingCard(stateRef.card)
-          setCard(null)
+          if (!stateRef.card || !stateRef.card.pinned) setCard(null)
           refreshButton()
         }
 
@@ -319,6 +359,7 @@ return {
 
         function onKeyDown(e) {
           if (e.key === 'Escape') {
+            if (stateRef.card && stateRef.card.pinned) { setBtn(null); return }
             btnSuppressed = false
             cancelLoadingCard(stateRef.card)
             setCard(null)
@@ -451,10 +492,14 @@ return {
         if (card.status === 'error') {
           footChildren.push(React.createElement('button', { key: 'retry', 'data-dsh-translator-act': '', onClick: () => translate(card.text) }, '重试'))
         }
-        footChildren.push(React.createElement('button', { key: 'close', 'data-dsh-translator-act': '', 'data-dsh-translator-close': '', onClick: () => { btnSuppressed = false; cancelLoadingCard(stateRef.card); setCard(null); refreshButton() } }, '关闭'))
+        footChildren.push(React.createElement('div', { key: 'actions', 'data-dsh-translator-actions': '' },
+          React.createElement('button', { 'data-dsh-translator-pin': card.pinned ? 'on' : 'off', title: card.pinned ? '取消固定' : '固定', onClick: () => setCard(prev => prev ? { ...prev, pinned: !prev.pinned } : prev) }, React.createElement(PinIcon, { filled: card.pinned === true })),
+          React.createElement('button', { 'data-dsh-translator-close': '', title: '关闭', onClick: () => { btnSuppressed = false; cancelLoadingCard(stateRef.card); setCard(null); refreshButton() } }, React.createElement(XIcon)),
+        ))
         children.push(React.createElement('div', {
           key: 'card',
           'data-dsh-translator-card': '',
+          'data-dsh-translator-pinned': card.pinned ? '' : undefined,
           style: { left: card.left + 'px', top: card.top + 'px', width: card.width + 'px' },
         },
           React.createElement('div', { 'data-dsh-translator-source': '', onMouseDown: beginDrag }, card.text),
