@@ -9,14 +9,35 @@ Select any text — a conversation message, the sidebar, an input field — and 
 
 ## Usage
 
-Select text → click the **「译」** button at the selection's top-right corner → the translation card appears. That's it.
+Select text → click the **「译」** button at the selection's top-right corner → the translation card appears. Drag the card by its header to move it, or pin it so it can't be dismissed by accident.
 
 ## Features
 
 - Word-selection trigger anywhere in the app; floating button follows the selection, theme-aware (light/dark)
 - Automatic direction detection (Chinese → English, everything else → Simplified Chinese)
-- Translation card with source, direction badge, result, and retry on failure; dismiss with Esc / click-outside / scroll
+- Translation card with source, direction badge, result, and retry on failure; dismiss with Esc / click-outside
+- Draggable card: drag it by its header to move it out of the way — it stays where you put it
+- Pinnable card: lock it in place (drag / Esc / click-outside disabled) until you close it — only one card at a time, so no nesting
+- Streaming-robust: works on live streaming output (no flicker), and the card stays put when the content scrolls
 - Uses your configured default model — zero extra configuration
+
+## Screenshots
+
+Select text → the floating **「译」** button appears at the selection's top-right corner:
+
+![Selecting text and the 译 button](screenshots/select-button.png)
+
+Click it → the translation card opens (English → Chinese):
+
+![Translation card EN → ZH](screenshots/en-zh.png)
+
+Chinese → English direction is automatic:
+
+![Translation card ZH → EN](screenshots/zh-en.png)
+
+Full workflow — select, translate, drag, pin, close:
+
+![Demo recording](recordings/demo.gif)
 
 ## Install
 

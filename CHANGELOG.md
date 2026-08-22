@@ -3,6 +3,20 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] - 2026-08-22
+
+### Added
+- Draggable translation card — drag it by its header; it stays where you put it.
+- Pinnable card — locks drag, Esc and click-outside dismissal (only the close button works); one card at a time, so no nesting.
+- Streaming-robust behavior — the button and card no longer flicker or get dismissed while output streams, and the card stays put when the content scrolls.
+- Hollow/solid pin + matching X vector icons in the card footer.
+- README usage screenshots and a full-workflow demo recording.
+
+### Changed
+- The floating 「译」 button appears only after the word selection ends (mouseup), not while dragging a selection.
+- The card is no longer dismissed on scroll.
+- The button hides once the card opens (one-shot trigger) and returns when the card is closed while the selection is still alive.
+
 ## [0.1.0] - 2026-08-21
 
 The first released version — the exact package that passed the 17/17 automated

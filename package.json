@@ -1,6 +1,6 @@
 {
   "name": "@nicearrack/dsh-translator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Youdao-style word-selection translation for the DSH web GUI. Select text anywhere, click the floating button, get a translation from the harness's own LLM — no API keys, no third-party endpoints. 有道风格划词翻译：DSH Web GUI 里划选文本即现悬浮「译」按钮，点击由 harness 自带大模型翻译，无需 API key、不依赖第三方接口。",
   "type": "module",
   "main": "lib/index.js",
@@ -26,10 +26,13 @@
   "keywords": [
     "dsh",
     "deepseek-harness",
+    "dsh-plugin",
+    "deepseek-harness-plugin",
     "cordis",
     "plugin",
     "translation",
     "word-selection",
+    "word-selection-translation",
     "划词翻译"
   ],
   "license": "MIT",

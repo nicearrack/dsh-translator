@@ -12,3 +12,8 @@ stability/
 .idea/
 .vscode/
 .e2e-home/
+.npm-tmp/
+.fonts/
+.fonts-cache/
+fontconfig.conf
+recordings/*.webm
