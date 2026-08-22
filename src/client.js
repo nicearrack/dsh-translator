@@ -354,7 +354,13 @@ return {
             setBtn(null)
             return
           }
-          refreshButton()
+          // Do NOT show the button here: selectionchange fires continuously while
+          // the user is still dragging a selection. Only mouseup shows the button.
+        }
+
+        function onMouseDown(e) {
+          // Starting a new interaction/selection hides any lingering button.
+          if (!isInsideRoot(e.target)) setBtn(null)
         }
 
         function onKeyDown(e) {
@@ -392,6 +398,7 @@ return {
           setCard(null)
         }
 
+        document.addEventListener('mousedown', onMouseDown)
         document.addEventListener('mouseup', onDragEnd)
         document.addEventListener('mouseup', onMouseUp)
         document.addEventListener('mousemove', onDragMove)
@@ -402,6 +409,7 @@ return {
         return () => {
           unmounted = true
           cancelLoadingCard(stateRef.card)
+          document.removeEventListener('mousedown', onMouseDown)
           document.removeEventListener('mouseup', onDragEnd)
           document.removeEventListener('mouseup', onMouseUp)
           document.removeEventListener('mousemove', onDragMove)
