@@ -27,6 +27,7 @@ const ctx = {
   timeout: (cb, ms) => { const t = setTimeout(cb, ms); return () => clearTimeout(t) },
   effect: (fn) => fn(),
   webServer: { register: (r) => { route = r; return () => {} } },
+  inject: () => {}, // settings service not simulated; config falls back to memConfig
 }
 apply(ctx)
 console.log('route registered:', route.kind, route.path)
