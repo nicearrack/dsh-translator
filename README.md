@@ -9,17 +9,19 @@ Select any text — a conversation message, the sidebar, an input field — and 
 
 ## Usage
 
-Select text → click the **「译」** button at the selection's top-right corner → the translation card appears. Drag the card by its header to move it, or pin it so it can't be dismissed by accident.
+Select text → click the **「译」** button → the translation card appears. Drag the card by its header to move it, or pin it so it can't be dismissed by accident. Click the translation (or the source text, or an error message) to copy it. The card's footer shows the translation direction, the model, the reasoning effort, and the token consumption.
 
 ## Features
 
 - Word-selection trigger anywhere in the app; floating button follows the selection, theme-aware (light/dark)
-- Automatic direction detection (Chinese → English, everything else → Simplified Chinese)
-- Translation card with source, direction badge, result, and retry on failure; dismiss with Esc / click-outside
-- Draggable card: drag it by its header to move it out of the way — it stays where you put it
-- Pinnable card: lock it in place (drag / Esc / click-outside disabled) until you close it — only one card at a time, so no nesting
+- Automatic direction: text in your configured **primary language** → English; anything else → the primary language
+- Primary language configurable: 简体中文 / 繁體中文 / 日本語 / 한국어 / Русский (default 简体中文)
+- Config card in DSH settings (Settings → Plugins → 划词翻译): primary language, model (pick one, or leave it empty to follow the session default), reasoning effort (off/low/high/max), timeout, max tokens, temperature — each field shows "overridden / restore default", with staged edits and save/discard
+- Translation card: source, direction badge, result, retry on failure; the footer shows model · reasoning effort · tokens
+- Click to copy: translation, source text, or error message — with a "已复制 / Copied" hint
+- Draggable card: drag it by its header; it stays where you put it
+- Pinnable card: locks drag, Esc and click-outside until you close it — one card at a time, no nesting
 - Streaming-robust: works on live streaming output (no flicker), and the card stays put when the content scrolls
-- Uses your configured default model — zero extra configuration
 
 ## Screenshots
 
@@ -34,6 +36,10 @@ Click it → the translation card opens (English → Chinese):
 Chinese → English direction is automatic:
 
 ![Translation card ZH → EN](screenshots/zh-en.png)
+
+Configure it in DSH settings → Plugins → 划词翻译:
+
+![Plugin configuration card](screenshots/config.png)
 
 Full workflow — select, translate, drag, pin, close:
 
