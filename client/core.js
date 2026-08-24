@@ -21,6 +21,49 @@
 
 let react = require('react')
 
+const I18N = {
+  zh: {
+    tooltip: '划词翻译', translating: '翻译中…', truncated: '（译文可能被截断）',
+    retry: '重试', pin: '固定', unpin: '取消固定', close: '关闭',
+    copied: '已复制', copiedSource: '已复制原文',
+    cardTitle: '划词翻译', cardDesc: '选中文字即译，用你配置的模型翻译',
+    primaryLanguage: '主语言', model: '模型', followSession: '跟随会话默认模型', custom: '手动指定', customModel: '指定模型', chooseModel: '— 选择一个模型 —',
+    direction: '翻译方向', auto: '自动判断', toPrimary: '固定译成主语言', toEn: '固定译成英文',
+    reasoningLevel: '推理等级',
+    timeout: '超时（毫秒）', maxTokens: '最大输出 token', temperature: '温度',
+    save: '保存', saving: '保存中…', discard: '放弃修改', saved: '已保存', saveFailed: '保存失败', overridden: '已覆盖', resetDefault: '恢复默认',
+  },
+  en: {
+    tooltip: 'Word-selection translation', translating: 'Translating…', truncated: '(may be truncated)',
+    retry: 'Retry', pin: 'Pin', unpin: 'Unpin', close: 'Close',
+    copied: 'Copied', copiedSource: 'Copied source',
+    cardTitle: 'Word-selection translation', cardDesc: 'Translate selected text with your configured model',
+    primaryLanguage: 'Primary language', model: 'Model', followSession: 'Follow session default model', custom: 'Custom', customModel: 'Custom model', chooseModel: '— Choose a model —',
+    direction: 'Translation direction', auto: 'Auto', toPrimary: 'Always to primary', toEn: 'Always to English',
+    reasoningLevel: 'Reasoning effort',
+    timeout: 'Timeout (ms)', maxTokens: 'Max tokens', temperature: 'Temperature',
+    save: 'Save', saving: 'Saving…', discard: 'Discard changes', saved: 'Saved', saveFailed: 'Save failed', overridden: 'Overridden', resetDefault: 'Reset to default',
+  },
+}
+const LANG_NAMES = {
+  'zh-Hans': { zh: '简体中文', en: 'Simplified Chinese' },
+  'zh-Hant': { zh: '繁體中文', en: 'Traditional Chinese' },
+  'ja-JP': { zh: '日本語', en: 'Japanese' },
+  'ko-KR': { zh: '한국어', en: 'Korean' },
+  'ru-RU': { zh: 'Русский', en: 'Russian' },
+  en: { zh: 'English', en: 'English' },
+}
+function formatTokens(n) {
+  const scaled = (v) => v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10)
+  if (n < 1000) return String(n)
+  if (n < 1000000) return scaled(n / 1000) + 'K'
+  return scaled(n / 1000000) + 'M'
+}
+const LocaleCtx = react.createContext({ tr: I18N.zh, lang: (code) => (LANG_NAMES[code] || {}).zh || code })
+function useI18n() {
+  return react.useContext(LocaleCtx)
+}
+
 const TRANSLATOR_CSS = `
 [data-dsh-translator-root] {
   position: fixed;
@@ -113,6 +156,23 @@ const TRANSLATOR_CSS = `
   min-height: 0;
   word-break: break-word;
   white-space: pre-wrap;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+}
+[data-dsh-translator-copied] {
+  position: absolute;
+  right: 12px;
+  bottom: 40px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-overlay);
+  border: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+  opacity: 0.95;
 }
 [data-dsh-translator-foot] {
   display: flex;
@@ -123,6 +183,15 @@ const TRANSLATOR_CSS = `
   font-size: 12px;
   line-height: 1.4;
   color: var(--dsw-alias-label-secondary);
+}
+[data-dsh-translator-meta] {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 [data-dsh-translator-act] {
   margin: 0;
@@ -146,6 +215,311 @@ const TRANSLATOR_CSS = `
 }
 [data-dsh-translator-error] {
   color: var(--dsw-alias-state-error-primary);
+}
+[data-dsh-translator-settings] {
+  display: flex;
+  flex-direction: column;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+[data-dsh-translator-field] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+}
+[data-dsh-translator-settings] > [data-dsh-translator-field] + [data-dsh-translator-field] {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+[data-dsh-translator-field-row] {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+[data-dsh-translator-field-row] [data-dsh-translator-field] {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+}
+[data-dsh-translator-field-head] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+[data-dsh-translator-field-label] {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary);
+}
+[data-dsh-translator-field-badges] {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-dsh-translator-badge] {
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 17px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-secondary);
+}
+[data-dsh-translator-reset] {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+[data-dsh-translator-reset]:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
+}
+[data-dsh-translator-select] {
+  position: relative;
+  display: block;
+}
+[data-dsh-translator-select-trigger] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 12px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+[data-dsh-translator-select-trigger]:hover {
+  border-color: var(--dsw-alias-label-dimmed);
+}
+[data-dsh-translator-select-trigger]:focus-visible {
+  outline: none;
+  border-color: var(--dsw-alias-brand-primary);
+}
+[data-dsh-translator-select-label] {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-dsh-translator-select-arrow] {
+  flex: none;
+  display: inline-flex;
+  color: var(--dsw-alias-label-tertiary);
+}
+[data-dsh-translator-select-menu] {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--dsw-alias-border-inverted);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-shadow-lv3);
+}
+[data-dsh-translator-select-option] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary);
+  text-align: left;
+  cursor: pointer;
+}
+[data-dsh-translator-select-option]:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+[data-dsh-translator-select-option][aria-selected="true"] {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+[data-dsh-translator-settings] input {
+  height: 34px;
+  padding: 0 12px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+[data-dsh-translator-settings] input:focus-visible {
+  outline: none;
+  border-color: var(--dsw-alias-brand-primary);
+}
+[data-dsh-translator-settings-title] {
+  font-weight: 600;
+  font-size: 13px;
+}
+[data-dsh-translator-settings-row] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+[data-dsh-translator-settings-save] {
+  padding: 4px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+[data-dsh-translator-settings-save]:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+[data-dsh-translator-settings-status] {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+[data-dsh-translator-plugin-card] {
+  list-style: none;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-3);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+[data-dsh-translator-plugin-card]:hover {
+  border-color: var(--dsw-alias-label-dimmed);
+}
+[data-dsh-translator-plugin-card][data-open="1"] {
+  background: var(--dsw-alias-bg-layer-2);
+  border-color: var(--dsw-alias-label-dimmed);
+}
+[data-dsh-translator-card-header] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 12px;
+}
+[data-dsh-translator-card-header]:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: -2px;
+}
+[data-dsh-translator-card-headtext] {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+[data-dsh-translator-card-name] {
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--dsw-alias-label-primary);
+}
+[data-dsh-translator-card-desc] {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+[data-dsh-translator-card-chevron] {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-tertiary);
+  transition: transform 160ms ease;
+}
+[data-dsh-translator-card-chevron="open"] {
+  transform: rotate(180deg);
+}
+[data-dsh-translator-card-body] {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  margin: 0 16px;
+  padding-bottom: 10px;
+}
+[data-dsh-translator-card-footer] {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+[data-dsh-translator-card-discard] {
+  appearance: none;
+  padding: 5px 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+[data-dsh-translator-card-discard]:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-label-dimmed);
+}
+[data-dsh-translator-card-discard]:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+[data-dsh-translator-card-save] {
+  appearance: none;
+  padding: 5px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-layer-3);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+[data-dsh-translator-card-save]:hover:not(:disabled) {
+  opacity: 0.92;
+}
+[data-dsh-translator-card-save]:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+[data-dsh-translator-card-discard]:focus-visible,
+[data-dsh-translator-card-save]:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
 }
 @media (prefers-reduced-motion: reduce) {
   [data-dsh-translator-btn] {
@@ -177,7 +551,7 @@ let dragging = false
 let dragStartX = 0, dragStartY = 0, dragLeft = 0, dragTop = 0
 let suppressNextUp = false
 let unmounted = false
-let stateRef = { card: null }
+let stateRef = { card: null, btnText: null }
 const CARD_W = 320
 
 function isInsideRoot(target) {
@@ -289,10 +663,52 @@ function XIcon() {
   )
 }
 
+function ChevronDownIcon() {
+  return react.createElement('svg', { viewBox: '0 0 24 24', width: 14, height: 14, 'aria-hidden': true, fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' },
+    react.createElement('path', { d: 'm6 9 6 6 6-6' }),
+  )
+}
+
 function TranslatorRoot() {
+  const { tr, lang } = useI18n()
   const [btn, setBtn] = react.useState(null)
   const [card, setCard] = react.useState(null)
+  const [copied, setCopied] = react.useState(null)
   stateRef.card = card
+
+  function fallbackCopy(text) {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    } catch (err) { /* ignore */ }
+  }
+
+  function copy(which) {
+    const text = which === 'source' ? card && card.text : (card && ((card.result && card.result.text) || card.error))
+    if (!text) return
+    setCopied(which)
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {}).catch(() => fallbackCopy(text))
+      } else {
+        fallbackCopy(text)
+      }
+    } catch (err) {
+      fallbackCopy(text)
+    }
+  }
+
+  react.useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(null), 1200)
+    return () => clearTimeout(t)
+  }, [copied])
 
   function beginDrag(e) {
     if (!stateRef.card || stateRef.card.pinned) return
@@ -322,6 +738,7 @@ function TranslatorRoot() {
       const info = currentSelection()
       if (!info) {
         setBtn(null)
+        stateRef.btnText = null
         return
       }
       const rect = info.rect
@@ -329,6 +746,7 @@ function TranslatorRoot() {
       let top = rect.top - 32 - 6
       if (top < 4) top = rect.bottom + 6
       setBtn({ left, top, text: info.text, rect })
+      stateRef.btnText = info.text
     }
 
     function onMouseUp(e) {
@@ -340,6 +758,7 @@ function TranslatorRoot() {
       if (!info) {
         cancelLoadingCard(stateRef.card)
         setBtn(null)
+        stateRef.btnText = null
         if (!stateRef.card || !stateRef.card.pinned) setCard(null)
         return
       }
@@ -358,13 +777,14 @@ function TranslatorRoot() {
         // Debounce: a streaming DOM update can transiently collapse the
         // selection; only hide if it stays empty for a moment.
         if (selHideTimer) clearTimeout(selHideTimer)
-        selHideTimer = setTimeout(() => { setBtn(null) }, 200)
+        selHideTimer = setTimeout(() => { setBtn(null); stateRef.btnText = null }, 200)
         return
       }
       if (selHideTimer) { clearTimeout(selHideTimer); selHideTimer = null }
       const range = sel.getRangeAt(0)
       if (isInsideRoot(range.startContainer) || isInsideRoot(range.endContainer)) {
         setBtn(null)
+        stateRef.btnText = null
         return
       }
       // Do NOT show the button here: selectionchange fires continuously while
@@ -373,7 +793,7 @@ function TranslatorRoot() {
 
     function onMouseDown(e) {
       // Starting a new interaction/selection hides any lingering button.
-      if (!isInsideRoot(e.target)) setBtn(null)
+      if (!isInsideRoot(e.target)) { setBtn(null); stateRef.btnText = null }
     }
 
     function onKeyDown(e) {
@@ -392,13 +812,17 @@ function TranslatorRoot() {
       // Streaming output triggers continuous scroll events. Do not dismiss
       // the UI: reposition the button while the selection stays on screen,
       // hide only when it scrolls out of view. The card is fixed and stays.
+      // Never reveal a button for an in-progress selection (before mouseup):
+      // only reposition one that was already shown (stateRef.btnText match).
       const info = currentSelection()
-      if (!info) { setBtn(null); return }
+      if (!info) { setBtn(null); stateRef.btnText = null; return }
       const r = info.rect
       if (r.bottom < -20 || r.top > window.innerHeight + 20 || r.right < -20 || r.left > window.innerWidth + 20) {
         setBtn(null)
+        stateRef.btnText = null
         return
       }
+      if (stateRef.btnText !== info.text) return
       const left = clamp(r.right - 8 - 32, 4, window.innerWidth - 36)
       let top = r.top - 32 - 6
       if (top < 4) top = r.bottom + 6
@@ -457,7 +881,7 @@ function TranslatorRoot() {
       if (unmounted || id !== requestSeq) return
       const v = value && typeof value === 'object' ? value : {}
       if (typeof v.text === 'string') {
-        setCard(prev => prev ? { ...prev, status: 'done', result: { target: v.target, text: v.text, engine: v.engine, truncated: v.truncated === true } } : prev)
+        setCard(prev => prev ? { ...prev, status: 'done', result: { target: v.target, text: v.text, engine: v.engine, truncated: v.truncated === true, model: v.model, reasoningEffort: v.reasoningEffort, tokens: v.tokens } } : prev)
       } else {
         setCard(prev => prev ? { ...prev, status: 'error', error: '翻译失败' } : prev)
       }
@@ -489,7 +913,7 @@ function TranslatorRoot() {
       key: 'btn',
       'data-dsh-translator-btn': '',
       style: { left: btn.left + 'px', top: btn.top + 'px' },
-      title: '划词翻译',
+      title: tr.tooltip,
       onMouseDown: (e) => e.preventDefault(),
       onClick: openPopup,
     }, '译'))
@@ -497,7 +921,7 @@ function TranslatorRoot() {
   if (card) {
     const bodyChildren = []
     if (card.status === 'loading') {
-      bodyChildren.push(react.createElement('div', { key: 'loading' }, '翻译中…'))
+      bodyChildren.push(react.createElement('div', { key: 'loading' }, tr.translating))
     } else if (card.status === 'error') {
       bodyChildren.push(react.createElement('div', { key: 'err', 'data-dsh-translator-error': '' }, card.error))
     } else if (card.result) {
@@ -505,17 +929,25 @@ function TranslatorRoot() {
     }
     const footChildren = []
     if (card.result && card.result.engine === 'model') {
-      footChildren.push(react.createElement('span', { key: 'dir' }, card.result.target === 'zh-CN' ? '→ 中文' : '→ English'))
+      const metaParts = []
+      if (card.result.target) metaParts.push('→ ' + lang(card.result.target))
+      if (card.result.model) metaParts.push(card.result.model)
+      if (card.result.reasoningEffort) metaParts.push(card.result.reasoningEffort)
+      if (card.result.tokens) {
+        const total = (card.result.tokens.input || 0) + (card.result.tokens.output || 0)
+        if (total > 0) metaParts.push(formatTokens(total) + ' tokens')
+      }
+      if (metaParts.length) footChildren.push(react.createElement('span', { key: 'dir', 'data-dsh-translator-meta': '' }, metaParts.join(' · ')))
     }
     if (card.result && card.result.truncated) {
-      footChildren.push(react.createElement('span', { key: 'trunc' }, '（译文可能被截断）'))
+      footChildren.push(react.createElement('span', { key: 'trunc' }, tr.truncated))
     }
     if (card.status === 'error') {
-      footChildren.push(react.createElement('button', { key: 'retry', 'data-dsh-translator-act': '', onClick: () => translate(card.text) }, '重试'))
+      footChildren.push(react.createElement('button', { key: 'retry', 'data-dsh-translator-act': '', onClick: () => translate(card.text) }, tr.retry))
     }
     footChildren.push(react.createElement('div', { key: 'actions', 'data-dsh-translator-actions': '' },
-      react.createElement('button', { 'data-dsh-translator-pin': card.pinned ? 'on' : 'off', title: card.pinned ? '取消固定' : '固定', onClick: () => setCard(prev => prev ? { ...prev, pinned: !prev.pinned } : prev) }, react.createElement(PinIcon, { filled: card.pinned === true })),
-      react.createElement('button', { 'data-dsh-translator-close': '', title: '关闭', onClick: () => { btnSuppressed = false; cancelLoadingCard(stateRef.card); setCard(null); refreshButton() } }, react.createElement(XIcon)),
+      react.createElement('button', { 'data-dsh-translator-pin': card.pinned ? 'on' : 'off', title: card.pinned ? tr.unpin : tr.pin, onClick: () => setCard(prev => prev ? { ...prev, pinned: !prev.pinned } : prev) }, react.createElement(PinIcon, { filled: card.pinned === true })),
+      react.createElement('button', { 'data-dsh-translator-close': '', title: tr.close, onClick: () => { btnSuppressed = false; cancelLoadingCard(stateRef.card); setCard(null); refreshButton() } }, react.createElement(XIcon)),
     ))
     children.push(react.createElement('div', {
       key: 'card',
@@ -523,12 +955,157 @@ function TranslatorRoot() {
       'data-dsh-translator-pinned': card.pinned ? '' : undefined,
       style: { left: card.left + 'px', top: card.top + 'px', width: card.width + 'px' },
     },
-      react.createElement('div', { 'data-dsh-translator-source': '', onMouseDown: beginDrag }, card.text),
-      react.createElement('div', { 'data-dsh-translator-body': '' }, ...bodyChildren),
+      react.createElement('div', { 'data-dsh-translator-source': '', onMouseDown: beginDrag, onClick: () => copy('source') }, card.text),
+      react.createElement('div', { 'data-dsh-translator-body': '', onClick: () => copy('result') }, ...bodyChildren),
       react.createElement('div', { 'data-dsh-translator-foot': '' }, ...footChildren),
+      copied ? react.createElement('div', { key: 'copied', 'data-dsh-translator-copied': '' }, copied === 'source' ? tr.copiedSource : tr.copied) : null,
     ))
   }
   return react.createElement('div', { 'data-dsh-translator-root': '' }, ...children)
+}
+
+const DEFAULTS = { primaryLanguage: 'zh-Hans', customModel: { provider: '', model: '' }, reasoningEffort: 'low', timeoutMs: 30000, maxTokens: 1024, temperature: 0.3 }
+function sameConfig(a, b) {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.primaryLanguage === b.primaryLanguage
+    && a.timeoutMs === b.timeoutMs
+    && a.maxTokens === b.maxTokens && a.temperature === b.temperature
+    && a.reasoningEffort === b.reasoningEffort
+    && (a.customModel && a.customModel.provider) === (b.customModel && b.customModel.provider)
+    && (a.customModel && a.customModel.model) === (b.customModel && b.customModel.model)
+}
+function ConfigSelect(props) {
+  const { value, onChange, options, placeholder } = props
+  const [open, setOpen] = react.useState(false)
+  const ref = react.useRef(null)
+  const sel = options && options.find(o => o.value === value)
+  react.useEffect(() => {
+    if (!open) return
+    function onDoc(e) { if (ref.current && ref.current.contains && !ref.current.contains(e.target)) setOpen(false) }
+    function onKey(e) { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
+  }, [open])
+  return react.createElement('div', { 'data-dsh-translator-select': '', ref },
+    react.createElement('button', { 'data-dsh-translator-select-trigger': '', type: 'button', onClick: () => setOpen(!open), 'aria-haspopup': 'listbox', 'aria-expanded': open ? 'true' : 'false' },
+      react.createElement('span', { 'data-dsh-translator-select-label': '' }, sel ? sel.label : (placeholder || '')),
+      react.createElement('span', { 'data-dsh-translator-select-arrow': '', 'aria-hidden': 'true' }, react.createElement(ChevronDownIcon)),
+    ),
+    open ? react.createElement('div', { 'data-dsh-translator-select-menu': '', role: 'listbox' },
+      options.map(o => react.createElement('button', { key: o.value, 'data-dsh-translator-select-option': '', type: 'button', role: 'option', 'aria-selected': o.value === value ? 'true' : undefined, onMouseDown: (e) => e.preventDefault(), onClick: () => { onChange(o.value); setOpen(false) } }, o.label)),
+    ) : null,
+  )
+}
+function ConfigCard() {
+  const { tr, lang } = useI18n()
+  const [cfg, setCfg] = react.useState(null)
+  const [base, setBase] = react.useState(null)
+  const [models, setModels] = react.useState([])
+  const [defaultModel, setDefaultModel] = react.useState(null)
+  const [open, setOpen] = react.useState(false)
+  const [status, setStatus] = react.useState('')
+  const [saving, setSaving] = react.useState(false)
+  const cardRef = react.useRef(null)
+  react.useEffect(() => {
+    if (!open || !cardRef.current) return
+    const t = setTimeout(() => {
+      if (cardRef.current) cardRef.current.scrollIntoView({ block: 'end', inline: 'nearest' })
+    }, 40)
+    return () => clearTimeout(t)
+  }, [open])
+  function load() {
+    callApi('get-config').then((value) => { if (value && typeof value === 'object') { setCfg(value); setBase(value) } }).catch(() => {})
+    callApi('list-models').then((value) => { if (Array.isArray(value)) setModels(value) }).catch(() => {})
+    callApi('default-model').then((value) => { if (value && typeof value === 'object') setDefaultModel(value) }).catch(() => {})
+  }
+  react.useEffect(load, [])
+  if (!cfg || !base) return null
+  const set = (k, v) => setCfg(prev => prev ? { ...prev, [k]: v } : prev)
+  const dirty = !sameConfig(cfg, base)
+  const customKey = (cfg.customModel && cfg.customModel.provider && cfg.customModel.model)
+    ? (cfg.customModel.provider + '/' + cfg.customModel.model) : ''
+  const modelKey = customKey || (defaultModel ? (defaultModel.provider + '/' + defaultModel.model) : '')
+  function isOverridden(field) {
+    if (field === 'customModel') {
+      const def = defaultModel ? (defaultModel.provider + '/' + defaultModel.model) : ''
+      return !!modelKey && modelKey !== def
+    }
+    return cfg[field] !== DEFAULTS[field]
+  }
+  function resetField(field) {
+    if (field === 'customModel') set('customModel', { provider: '', model: '' })
+    else set(field, DEFAULTS[field])
+  }
+  function save() {
+    setSaving(true); setStatus('')
+    callApi('set-config', { patch: cfg }).then((value) => {
+      setSaving(false); setStatus(tr.saved)
+      if (value && typeof value === 'object') setBase(value)
+      setTimeout(() => setStatus(''), 1500)
+    }).catch((err) => {
+      setSaving(false)
+      setStatus((err && err.message) || tr.saveFailed)
+      setTimeout(() => setStatus(''), 1500)
+    })
+  }
+  function discard() { setStatus(''); setCfg(base) }
+  function fieldHead(labelText, field) {
+    const over = isOverridden(field)
+    return react.createElement('div', { 'data-dsh-translator-field-head': '' },
+      react.createElement('span', { 'data-dsh-translator-field-label': '' }, labelText),
+      over ? react.createElement('span', { 'data-dsh-translator-field-badges': '' },
+        react.createElement('span', { 'data-dsh-translator-badge': '' }, tr.overridden),
+        react.createElement('button', { 'data-dsh-translator-reset': '', type: 'button', onClick: () => resetField(field) }, tr.resetDefault),
+      ) : null,
+    )
+  }
+  const langCodes = Object.keys(LANG_NAMES).filter(c => c !== 'en')
+  return react.createElement('div', { 'data-dsh-translator-plugin-card': '', 'data-open': open ? '1' : undefined, ref: cardRef },
+    react.createElement('button', { 'data-dsh-translator-card-header': '', 'aria-expanded': open ? 'true' : 'false', onClick: () => setOpen(!open) },
+      react.createElement('span', { 'data-dsh-translator-card-headtext': '' },
+        react.createElement('span', { 'data-dsh-translator-card-name': '' }, tr.cardTitle),
+        react.createElement('span', { 'data-dsh-translator-card-desc': '' }, tr.cardDesc),
+      ),
+      react.createElement('span', { 'data-dsh-translator-card-chevron': open ? 'open' : '' }, react.createElement(ChevronDownIcon)),
+    ),
+    open ? react.createElement('div', { 'data-dsh-translator-card-body': '', 'data-dsh-translator-settings': '' },
+      react.createElement('div', { 'data-dsh-translator-field': '' },
+        fieldHead(tr.primaryLanguage, 'primaryLanguage'),
+        react.createElement(ConfigSelect, { value: cfg.primaryLanguage, onChange: (v) => set('primaryLanguage', v), options: langCodes.map(c => ({ value: c, label: lang(c) })) }),
+      ),
+      react.createElement('div', { 'data-dsh-translator-field': '' },
+        fieldHead(tr.model, 'customModel'),
+        react.createElement(ConfigSelect, { value: modelKey, onChange: (v) => { const i = v.indexOf('/'); if (i > 0) set('customModel', { provider: v.slice(0, i), model: v.slice(i + 1) }) }, options: models.map(m => ({ value: m.provider + '/' + m.model, label: m.label })) }),
+      ),
+      react.createElement('div', { 'data-dsh-translator-field-row': '' },
+        react.createElement('div', { 'data-dsh-translator-field': '' },
+          fieldHead(tr.reasoningLevel, 'reasoningEffort'),
+          react.createElement(ConfigSelect, { value: cfg.reasoningEffort, onChange: (v) => set('reasoningEffort', v), options: [{ value: 'off', label: 'off' }, { value: 'low', label: 'low' }, { value: 'high', label: 'high' }, { value: 'max', label: 'max' }] }),
+        ),
+        react.createElement('div', { 'data-dsh-translator-field': '' },
+          fieldHead(tr.maxTokens, 'maxTokens'),
+          react.createElement('input', { type: 'number', value: cfg.maxTokens, min: 1, onChange: (e) => set('maxTokens', Number(e.target.value) || 1024) }),
+        ),
+      ),
+      react.createElement('div', { 'data-dsh-translator-field-row': '' },
+        react.createElement('div', { 'data-dsh-translator-field': '' },
+          fieldHead(tr.timeout, 'timeoutMs'),
+          react.createElement('input', { type: 'number', value: cfg.timeoutMs, min: 1000, onChange: (e) => set('timeoutMs', Number(e.target.value) || 30000) }),
+        ),
+        react.createElement('div', { 'data-dsh-translator-field': '' },
+          fieldHead(tr.temperature, 'temperature'),
+          react.createElement('input', { type: 'number', step: 0.1, min: 0, max: 2, value: cfg.temperature, onChange: (e) => set('temperature', Number(e.target.value) || 0.3) }),
+        ),
+      ),
+      react.createElement('div', { 'data-dsh-translator-card-footer': '' },
+        react.createElement('button', { 'data-dsh-translator-card-discard': '', onClick: discard, disabled: !dirty || saving }, tr.discard),
+        react.createElement('button', { 'data-dsh-translator-card-save': '', onClick: save, disabled: !dirty || saving }, saving ? tr.saving : tr.save),
+        status ? react.createElement('span', { 'data-dsh-translator-settings-status': '' }, status) : null,
+      ),
+    ) : null,
+  )
 }
 
 const inject = ['slots']
@@ -541,8 +1118,29 @@ function apply(ctx) {
 
   const slots = ctx.get('slots')
   if (slots === undefined) return
+  const locale = ctx.get('locale')
+  function LocaleBound(props) {
+    const [loc, setLoc] = react.useState(() => {
+      try { return (locale && locale.getSnapshot && locale.getSnapshot().active) || 'zh' } catch (err) { return 'zh' }
+    })
+    react.useEffect(() => {
+      if (!locale || !locale.subscribe) return
+      const un = locale.subscribe(() => {
+        try { setLoc((locale.getSnapshot && locale.getSnapshot().active) || 'zh') } catch (err) { /* ignore */ }
+      })
+      return () => { if (un) un() }
+    }, [])
+    const key = loc === 'en' ? 'en' : 'zh'
+    const tr = I18N[key]
+    const lang = (code) => (LANG_NAMES[code] || {})[key] || code
+    return react.createElement(LocaleCtx.Provider, { value: { tr, lang } }, props.children)
+  }
   slots.inject('shell.overlay', () => slots.register(
     { name: 'shell.overlay', id: 'dsh-translator-overlay' },
-    () => react.createElement(TranslatorRoot),
+    () => react.createElement(LocaleBound, null, react.createElement(TranslatorRoot)),
+  ))
+  slots.inject('settings.plugin.item', () => slots.register(
+    { name: 'settings.plugin.item', key: 'dsh-translator' },
+    () => react.createElement(LocaleBound, null, react.createElement(ConfigCard)),
   ))
 }
