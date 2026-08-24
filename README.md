@@ -69,6 +69,24 @@ dsh plugin --profile web add github:nicearrack/dsh-translator
 > one-time authorization: add `allowBuilds: { "@nicearrack/dsh-translator": true }`
 > to the profile's `pnpm-workspace.yaml` if the first install is refused.
 
+## Update
+
+```sh
+# update to the newest release
+dsh plugin --profile web update @nicearrack/dsh-translator
+
+# or pin a specific version
+dsh plugin --profile web update @nicearrack/dsh-translator@0.2.0
+```
+
+> **Fresh releases**: npm registry metadata can lag after a publish (a few
+> minutes, occasionally longer). If `@latest` still resolves to an older
+> version, pin the exact one — `@nicearrack/dsh-translator@0.2.0` — or check
+> `npm view @nicearrack/dsh-translator versions`.
+>
+> After updating, restart the DSH instance (`dsh --profile web`) so the new
+> host bundle loads; the client bundle picks up on the next page refresh.
+
 ## Uninstall
 
 ```sh

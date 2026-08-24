@@ -69,6 +69,23 @@ dsh plugin --profile web add github:nicearrack/dsh-translator
 > profile 的 `pnpm-workspace.yaml` 里加一次授权：
 > `allowBuilds: { "@nicearrack/dsh-translator": true }`。
 
+## 更新
+
+```sh
+# 更新到最新版
+dsh plugin --profile web update @nicearrack/dsh-translator
+
+# 或指定版本
+dsh plugin --profile web update @nicearrack/dsh-translator@0.2.0
+```
+
+> **刚发布的版本**：npm 元数据在发布后有一定的传播延迟（几分钟到更久）。若
+> `@latest` 仍解析到旧版本，请钉住具体版本（`@nicearrack/dsh-translator@0.2.0`），
+> 也可用 `npm view @nicearrack/dsh-translator versions` 查看可用版本。
+>
+> 更新后请重启 DSH 实例（`dsh --profile web`）以加载新的 host 包；客户端包在
+> 下次刷新页面时生效。
+
 ## 卸载
 
 ```sh
