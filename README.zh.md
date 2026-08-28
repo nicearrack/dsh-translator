@@ -2,14 +2,14 @@
 
 基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的有道风格划词翻译插件。
 
-划选任意文本——会话消息、侧栏、输入框——选区右上角浮现悬浮 **「译」** 按钮，点击即弹出译文卡片。翻译由 **harness 自带的大模型**完成：无需 API key、不依赖第三方接口，选中的文本不会离开你已配置的模型管道。
+划选任意文本——会话消息、侧栏、输入框——选区右上角浮现悬浮**翻译**按钮，点击即弹出译文卡片。翻译由 **harness 自带的大模型**完成：无需 API key、不依赖第三方接口，选中的文本不会离开你已配置的模型管道。
 
 | [English README](README.md) | 中文 |
 |---|---|
 
 ## 使用
 
-划选文本 → 点击选区右上角的「译」→ 译文卡片即出。按住卡片顶部可拖动；点「固定」可锁定它，避免被误关。点击译文（或原文、错误信息）即可复制。卡片底部显示翻译方向、所用模型、推理等级与 token 消耗。
+划选文本 → 点击选区右上角的翻译按钮 → 译文卡片即出。按住卡片顶部可拖动；点「固定」可锁定它，避免被误关。点击译文（或原文、错误信息）即可复制。卡片底部显示翻译方向、所用模型、推理等级与 token 消耗。
 
 ## 功能
 
@@ -25,9 +25,9 @@
 
 ## 截图
 
-划选文本 → 选区右上角出现悬浮 **「译」** 按钮：
+划选文本 → 选区右上角出现悬浮**翻译**按钮：
 
-![划选文本与「译」按钮](screenshots/select-button.png)
+![划选文本与翻译按钮](screenshots/select-button.png)
 
 点击 → 弹出译文卡片（英译中）：
 
@@ -41,9 +41,6 @@
 
 ![插件配置卡片](screenshots/config.png)
 
-完整流程——划词、翻译、拖动、固定、关闭：
-
-![演示录屏](recordings/demo.gif)
 
 ## 安装
 
@@ -76,11 +73,11 @@ dsh plugin --profile web add github:nicearrack/dsh-translator
 dsh plugin --profile web update @nicearrack/dsh-translator
 
 # 或指定版本
-dsh plugin --profile web update @nicearrack/dsh-translator@0.2.0
+dsh plugin --profile web update @nicearrack/dsh-translator@0.2.1
 ```
 
 > **刚发布的版本**：npm 元数据在发布后有一定的传播延迟（几分钟到更久）。若
-> `@latest` 仍解析到旧版本，请钉住具体版本（`@nicearrack/dsh-translator@0.2.0`），
+> `@latest` 仍解析到旧版本，请钉住具体版本（`@nicearrack/dsh-translator@0.2.1`），
 > 也可用 `npm view @nicearrack/dsh-translator versions` 查看可用版本。
 >
 > 更新后请重启 DSH 实例（`dsh --profile web`）以加载新的 host 包；客户端包在

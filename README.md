@@ -2,14 +2,14 @@
 
 Youdao-style word-selection translation for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).
 
-Select any text — a conversation message, the sidebar, an input field — and a floating **「译」** button appears at the selection's top-right corner. Click it to get a translation card. Translations are produced by **the harness's own LLM**: no API keys, no third-party endpoints, your selected text never leaves the model pipeline you already configured.
+Select any text — a conversation message, the sidebar, an input field — and a floating **translate** button appears at the selection's top-right corner. Click it to get a translation card. Translations are produced by **the harness's own LLM**: no API keys, no third-party endpoints, your selected text never leaves the model pipeline you already configured.
 
 | English | [中文 README](README.zh.md) |
 |---|---|
 
 ## Usage
 
-Select text → click the **「译」** button → the translation card appears. Drag the card by its header to move it, or pin it so it can't be dismissed by accident. Click the translation (or the source text, or an error message) to copy it. The card's footer shows the translation direction, the model, the reasoning effort, and the token consumption.
+Select text → click the floating **translate** button → the translation card appears. Drag the card by its header to move it, or pin it so it can't be dismissed by accident. Click the translation (or the source text, or an error message) to copy it. The card's footer shows the translation direction, the model, the reasoning effort, and the token consumption.
 
 ## Features
 
@@ -25,9 +25,9 @@ Select text → click the **「译」** button → the translation card appears.
 
 ## Screenshots
 
-Select text → the floating **「译」** button appears at the selection's top-right corner:
+Select text → the floating **translate** button appears at the selection's top-right corner:
 
-![Selecting text and the 译 button](screenshots/select-button.png)
+![Selecting text and the floating translate button](screenshots/select-button.png)
 
 Click it → the translation card opens (English → Chinese):
 
@@ -41,9 +41,6 @@ Configure it in DSH settings → Plugins → 划词翻译:
 
 ![Plugin configuration card](screenshots/config.png)
 
-Full workflow — select, translate, drag, pin, close:
-
-![Demo recording](recordings/demo.gif)
 
 ## Install
 
@@ -76,12 +73,12 @@ dsh plugin --profile web add github:nicearrack/dsh-translator
 dsh plugin --profile web update @nicearrack/dsh-translator
 
 # or pin a specific version
-dsh plugin --profile web update @nicearrack/dsh-translator@0.2.0
+dsh plugin --profile web update @nicearrack/dsh-translator@0.2.1
 ```
 
 > **Fresh releases**: npm registry metadata can lag after a publish (a few
 > minutes, occasionally longer). If `@latest` still resolves to an older
-> version, pin the exact one — `@nicearrack/dsh-translator@0.2.0` — or check
+> version, pin the exact one — `@nicearrack/dsh-translator@0.2.1` — or check
 > `npm view @nicearrack/dsh-translator versions`.
 >
 > After updating, restart the DSH instance (`dsh --profile web`) so the new
