@@ -16,4 +16,6 @@ stability/
 .fonts/
 .fonts-cache/
 fontconfig.conf
-recordings/*.webm
+
+# machine-specific dev overlay (absolute paths)
+dev.patch.yml
