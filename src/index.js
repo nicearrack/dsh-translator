@@ -2,27 +2,36 @@
  * dsh-translator — packaged Host half
  *
  * ESM Cordis plugin module, installed through the dsh bundle mechanism
- * (cordis.patch.yml row). The browser Client half calls this over HTTP:
+ * (cordis.patch.yml row; see docs/user/develop/basic/publish). The browser
+ * Client half calls this over HTTP for the business API only:
  *
  *   POST /translator/api/translate         { text, seq? }
  *   POST /translator/api/translate-cancel  { seq }
- *   POST /translator/api/get-config        { }
- *   POST /translator/api/set-config        { patch }
  *   POST /translator/api/list-models       { }
+ *   POST /translator/api/default-model     { }
+ *
+ * The settings card is NOT served over this custom API: the card binds the
+ * official `ctx.settingsScope` namespace (docs/reference/cookbook/
+ * adding-a-settings-card), writing through the settings transport and
+ * rendering the host-provided value/base/user layers.
  *
  * Response envelope (mirrors the dsh-better-sidebar API convention):
  *   { ok: true, value: <json> } | { ok: false, error: { code, message } }
  *
- * The translation core is identical to the dynamic-plugin host
- * (src/host.js): ctx.llm.stream with the user's default model, timeout,
- * single in-flight run, seq-matched cancellation.
+ * The translation core streams through ctx.llm with the user's default
+ * model, a timeout, a single in-flight run, and seq-matched cancellation.
  *
- * Configuration is persisted through the DSH `settings` service under the
- * `dsh-translator` namespace (per-profile), using a schemastery schema. This
- * is the DSH-recommended plugin configuration surface: the client card
- * registers in the `settings.plugin.item` slot and reads/writes over HTTP.
+ * Configuration follows docs/user/develop/basic/config: every tunable is a
+ * plugin `Config` field with its default in the schema, so a deployment can
+ * change any value from `cordis.yml` without touching code. The validated row
+ * config arrives as `apply(ctx, config)` and is installed as the composition
+ * `base` of the per-profile `settings` namespace (`dsh-translator`) through
+ * the canonical `installSettingsSection` wiring: schema defaults ← row config
+ * ← user document; without a settings provider the row config is the only
+ * source and the plugin keeps working exactly as composed.
  */
 import z from '@deepseek-ai/schemastery'
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 
 export const name = 'dsh-translator'
 
@@ -30,16 +39,17 @@ export const inject = ['webServer', 'llm', 'timer']
 
 const ROUTE_PREFIX = '/translator/api'
 
-const DEFAULT_CONFIG = {
-  primaryLanguage: 'zh-Hans',
-  customModel: { provider: '', model: '' },
-  reasoningEffort: 'low',
-  timeoutMs: 30000,
-  maxTokens: 1024,
-  temperature: 0.3,
-}
+/** Browser pair key: the settings namespace the card binds on `ctx.settingsScope`. */
+const TRANSLATOR_NS = settingsNamespace('dsh-translator')
 
-const Config = z.object({
+/**
+ * Plugin configuration (schemastery schema, Cordis Standard Schema).
+ *
+ * Defaults live here — the same schema validates the `config:` block of the
+ * plugin row in `cordis.yml` and the user settings section stored under the
+ * `dsh-translator` namespace, so the two layers can never drift apart.
+ */
+export const Config = z.object({
   primaryLanguage: z.union([z.const('zh-Hans'), z.const('zh-Hant'), z.const('ja-JP'), z.const('ko-KR'), z.const('ru-RU')]).default('zh-Hans'),
   customModel: z.object({
     provider: z.string().default(''),
@@ -51,56 +61,63 @@ const Config = z.object({
   temperature: z.number().min(0).max(2).step(0.1).default(0.3),
 })
 
-function deepMerge(base, extra) {
-  const out = Object.assign({}, base, extra)
-  if (extra && extra.customModel) {
-    out.customModel = Object.assign({}, base.customModel || {}, extra.customModel)
+function regularize(c) {
+  return {
+    primaryLanguage: PRIMARY_LANGS.includes(c.primaryLanguage) ? c.primaryLanguage : 'zh-Hans',
+    customModel: { provider: String((c.customModel && c.customModel.provider) || ''), model: String((c.customModel && c.customModel.model) || '') },
+    reasoningEffort: ['off', 'low', 'high', 'max'].includes(c.reasoningEffort) ? c.reasoningEffort : 'low',
+    timeoutMs: (typeof c.timeoutMs === 'number' && c.timeoutMs >= 1000) ? Math.floor(c.timeoutMs) : 30000,
+    maxTokens: (typeof c.maxTokens === 'number' && c.maxTokens >= 1) ? Math.floor(c.maxTokens) : 1024,
+    temperature: (typeof c.temperature === 'number' && c.temperature >= 0 && c.temperature <= 2) ? c.temperature : 0.3,
   }
-  return out
 }
 
-export function apply(ctx) {
-  const llm = ctx.get('llm')
+export function apply(ctx, config) {
+  // Required services are ready before apply runs (docs/user/develop/framework/service):
+  // injected services are read from ctx directly; only optional ones use ctx.get().
+  const llm = ctx.llm
   const defaultModel = ctx.get('agentDefaultModel')
-  let settingsSvc = undefined
+  // Row config (cordis.yml `config:`), validated and default-filled by Cordis
+  // against the exported schema. It is the deployment base layer; the settings
+  // user document wins over it.
+  const rowConfig = config && typeof config === 'object' ? regularize(config) : null
+  const schemaDefaults = Config({})
   let seq = 0
   let runSeq = 0
   let inflight = null
 
-  // Memory fallback so the plugin still works if the settings service is not
-  // mounted (e.g. a profile without the settings provider). When settings is
-  // present, this is only used as a bootstrap default for `get-config`.
-  let memConfig = deepMerge(DEFAULT_CONFIG, {})
+  // Canonical optional-settings consumer wiring
+  // (docs/reference/cookbook/adding-a-settings-card): while a settings
+  // service exists the namespace resolves schema defaults ← row config ←
+  // user document; when the service goes away the config source falls back
+  // to the composition entry, so translation keeps working as composed.
+  let source = () => rowConfig ?? schemaDefaults
+  installSettingsSection(ctx, TRANSLATOR_NS, Config, rowConfig ?? schemaDefaults, {
+    setSource: (next) => { source = next },
+    onChange: () => {},
+  })
 
-  function regularize(c) {
-    return {
-      primaryLanguage: PRIMARY_LANGS.includes(c.primaryLanguage) ? c.primaryLanguage : 'zh-Hans',
-      customModel: { provider: String((c.customModel && c.customModel.provider) || ''), model: String((c.customModel && c.customModel.model) || '') },
-      reasoningEffort: ['off', 'low', 'high', 'max'].includes(c.reasoningEffort) ? c.reasoningEffort : 'low',
-      timeoutMs: (typeof c.timeoutMs === 'number' && c.timeoutMs >= 1000) ? Math.floor(c.timeoutMs) : 30000,
-      maxTokens: (typeof c.maxTokens === 'number' && c.maxTokens >= 1) ? Math.floor(c.maxTokens) : 1024,
-      temperature: (typeof c.temperature === 'number' && c.temperature >= 0 && c.temperature <= 2) ? c.temperature : 0.3,
-    }
+  // Exposure guard (docs/reference/subsystems/web-server: the carrier has no
+  // TLS/auth/origin policy; only the app index is behind the browser-auth
+  // fence, so every named route — including this one — is unauthenticated).
+  // The official Typert Remote path is not available to out-of-repo plugins
+  // (marker tables are module-private), so the honest posture is a loud
+  // warning when the deployment deliberately listens on all interfaces.
+  if (ctx.webServer.host === '0.0.0.0') {
+    console.warn(
+      '[dsh-translator] bound to 0.0.0.0: the unauthenticated /translator/api '
+      + 'endpoints are reachable by anyone on the network; prefer 127.0.0.1 '
+      + '(or upstream gate the prefix) when the harness serves a LAN.',
+    )
   }
+  // Fiber teardown aborts any in-flight provider stream (docs/user/develop/
+  // framework: registrations and open work belong to the fiber).
+  ctx.effect(() => () => {
+    if (inflight && inflight.abort) inflight.abort()
+  }, 'dsh-translator: abort in-flight translation')
 
   function currentConfig() {
-    if (settingsSvc) {
-      try {
-        const v = settingsSvc.get('dsh-translator')
-        if (v && typeof v === 'object') return regularize(deepMerge(DEFAULT_CONFIG, v))
-      } catch (err) {
-        console.error('[translator] settings.get failed:', err)
-      }
-    }
-    return regularize(memConfig)
-  }
-
-  async function saveConfig(patch) {
-    if (settingsSvc) {
-      await settingsSvc.update('dsh-translator', patch || {})
-    } else {
-      memConfig = deepMerge(memConfig, patch || {})
-    }
+    return regularize(source())
   }
 
   function resolveTarget(text, c) {
@@ -142,11 +159,15 @@ export function apply(ctx) {
     }
     const providers = llm.listProviders()
     if (!providers || providers.length === 0) {
-      throw new Error('未配置可用模型（无 LLM provider）')
+      const e = new Error('no configured model: no LLM provider')
+      e.code = 'no-provider'
+      throw e
     }
     const models = await llm.listModels(providers[0].id)
     if (!models || models.length === 0) {
-      throw new Error('provider ' + providers[0].id + ' 没有可用模型')
+      const e = new Error('provider has no models: ' + providers[0].id)
+      e.code = 'no-model'; e.detail = providers[0].id
+      throw e
     }
     return { provider: providers[0].id, model: models[0].id }
   }
@@ -159,7 +180,18 @@ export function apply(ctx) {
     let truncated = false
     let tokens = null
     let eff = c.reasoningEffort
-    const disposeTimeout = ctx.timeout(() => { timedOut = true }, c.timeoutMs)
+    // Real cancellation: the signal rides into llm.stream (GenerateOptions
+    // carries it), so an abort actually tears down the provider request
+    // instead of merely breaking out of the read loop while the fetch keeps
+    // running — a stalled stream could otherwise outlive its timeout forever.
+    const controller = new AbortController()
+    run.signal = controller.signal
+    run.abort = () => controller.abort()
+    const disposeTimeout = ctx.timeout(() => {
+      timedOut = true
+      controller.abort()
+    }, c.timeoutMs)
+    const isAbort = (err) => (err && (err.name === 'AbortError' || /abort/i.test(String((err && err.message) || err))))
     const consume = async (effort) => {
       const stream = llm.stream({
         provider,
@@ -168,27 +200,35 @@ export function apply(ctx) {
         system,
         temperature: c.temperature,
         maxTokens: c.maxTokens,
+        signal: controller.signal,
         ...(effort === undefined ? {} : { reasoningEffort: effort }),
       })
-      for await (const chunk of stream) {
-        if (run.cancelled) break
-        if (timedOut) break
-        if (chunk.type === 'text-delta') {
-          out += chunk.text
-        } else if (chunk.type === 'usage' && chunk.usage) {
-          tokens = { input: chunk.usage.inputTokens || 0, output: chunk.usage.outputTokens || 0 }
-        } else if (chunk.type === 'finish') {
-          if (chunk.reason.kind === 'max-tokens') {
-            truncated = true
-            break
-          }
-          if (chunk.reason.kind !== 'stop') {
-            failure = chunk.reason.failure && chunk.reason.failure.message
-              ? chunk.reason.failure.message
-              : '模型调用失败（' + chunk.reason.kind + '）'
-            break
+      try {
+        for await (const chunk of stream) {
+          if (run.cancelled) break
+          if (timedOut) break
+          if (chunk.type === 'text-delta') {
+            out += chunk.text
+          } else if (chunk.type === 'usage' && chunk.usage) {
+            tokens = { input: chunk.usage.inputTokens || 0, output: chunk.usage.outputTokens || 0 }
+          } else if (chunk.type === 'finish') {
+            if (chunk.reason.kind === 'max-tokens') {
+              truncated = true
+              break
+            }
+            if (chunk.reason.kind !== 'stop') {
+              failure = chunk.reason.failure && chunk.reason.failure.message
+                ? chunk.reason.failure.message
+                : 'model error (' + chunk.reason.kind + ')'
+              break
+            }
           }
         }
+      } catch (err) {
+        // The provider rejected because we aborted (cancel or timeout): the
+        // post-loop flags above decide the outcome, nothing to rethrow here.
+        if (run.cancelled || timedOut || isAbort(err)) return null
+        throw err
       }
       return null
     }
@@ -204,7 +244,7 @@ export function apply(ctx) {
         await consume(eff)
       } catch (err) {
         const message = String((err && err.message) || err)
-        if (eff !== undefined && /reasoning effort/i.test(message)) {
+        if (eff !== undefined && !isAbort(err) && !run.cancelled && !timedOut && /reasoning effort/i.test(message)) {
           eff = undefined
           await consume(undefined)
         } else {
@@ -216,9 +256,21 @@ export function apply(ctx) {
       if (inflight === run) inflight = null
     }
     if (run.cancelled) return { cancelled: true }
-    if (timedOut) throw new Error('翻译超时（' + c.timeoutMs + ' 秒）')
-    if (failure) throw new Error(failure)
-    if (!out || !out.trim()) throw new Error('模型未返回译文')
+    if (timedOut) {
+      const e = new Error('translation timed out (' + c.timeoutMs + ' ms)')
+      e.code = 'timeout'; e.detail = c.timeoutMs
+      throw e
+    }
+    if (failure) {
+      const e = new Error('model call failed: ' + failure)
+      e.code = 'model-error'; e.detail = failure
+      throw e
+    }
+    if (!out || !out.trim()) {
+      const e = new Error('model returned no translation')
+      e.code = 'translated-empty'
+      throw e
+    }
     // Some providers (e.g. OpenAI-compatible local endpoints) report zero
     // usage; estimate from text length rather than hiding the figure.
     if (!tokens || (tokens.input === 0 && tokens.output === 0)) {
@@ -252,8 +304,8 @@ export function apply(ctx) {
   async function handleTranslate(payload) {
     const raw = payload && typeof payload.text === 'string' ? payload.text : ''
     const text = raw.trim().slice(0, 2000)
-    if (!text) return { ok: false, error: { code: 'empty', message: '没有可翻译的文本' } }
-    if (inflight) inflight.cancelled = true
+    if (!text) return { ok: false, error: { code: 'empty', message: 'nothing to translate' } }
+    if (inflight) { inflight.cancelled = true; if (inflight.abort) inflight.abort() }
     const run = { cancelled: false }
     inflight = run
     runSeq += 1
@@ -266,8 +318,13 @@ export function apply(ctx) {
       if (result.cancelled) return { ok: false, error: { code: 'cancelled', message: 'cancelled' } }
       return { ok: true, value: { target, text: result.text, engine: 'model', truncated: result.truncated === true, model: picked.model, reasoningEffort: c.reasoningEffort, tokens: result.tokens } }
     } catch (err) {
+      // Error codes are the locale-independent contract; the browser card
+      // renders them through its own zh/en dictionary. `message` stays as a
+      // neutral fallback for non-localized clients.
+      const code = err && typeof err.code === 'string' ? err.code : 'translate-failed'
       const message = err instanceof Error ? err.message : String(err)
-      return { ok: false, error: { code: 'translate-failed', message } }
+      const detail = err && typeof err.detail !== 'undefined' ? err.detail : undefined
+      return { ok: false, error: { code, message, ...(detail !== undefined ? { detail } : {}) } }
     } finally {
       if (inflight === run) inflight = null
     }
@@ -276,22 +333,9 @@ export function apply(ctx) {
   function handleCancel(payload) {
     if (payload && typeof payload.seq === 'number' && payload.seq === runSeq && inflight) {
       inflight.cancelled = true
+      if (inflight.abort) inflight.abort()
     }
     return { ok: true, value: null }
-  }
-
-  async function handleGetConfig() {
-    return { ok: true, value: currentConfig() }
-  }
-
-  async function handleSetConfig(payload) {
-    try {
-      await saveConfig(payload && payload.patch)
-      return { ok: true, value: currentConfig() }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      return { ok: false, error: { code: 'config-invalid', message } }
-    }
   }
 
   async function handleListModels() {
@@ -336,13 +380,9 @@ export function apply(ctx) {
       const payload = await readJsonBody(req)
       let result
       if (method === 'translate') {
-        result = await handleTranslate(payload)
+          result = await handleTranslate(payload)
       } else if (method === 'translate-cancel') {
         result = handleCancel(payload)
-      } else if (method === 'get-config') {
-        result = await handleGetConfig()
-      } else if (method === 'set-config') {
-        result = await handleSetConfig(payload)
       } else if (method === 'list-models') {
         result = await handleListModels()
       } else if (method === 'default-model') {
@@ -357,20 +397,6 @@ export function apply(ctx) {
       res.end(JSON.stringify(result))
     },
   }), 'dsh-translator: api route')
-
-  // Register the settings namespace as soon as the settings service is
-  // available (the DSH-recommended pattern; the service may mount after this
-  // plugin's apply so a plain ctx.get at apply time is too early). Capturing
-  // the service handle also lets currentConfig()/saveConfig() read and write
-  // the persisted per-profile value.
-  ctx.inject(['settings'], (settingsCtx) => {
-    settingsSvc = settingsCtx.settings
-    try {
-      settingsCtx.settings.register('dsh-translator', Config)
-    } catch (err) {
-      console.error('[translator] settings.register failed:', err)
-    }
-  })
 }
 
 const PRIMARY_LANGS = ['zh-Hans', 'zh-Hant', 'ja-JP', 'ko-KR', 'ru-RU']

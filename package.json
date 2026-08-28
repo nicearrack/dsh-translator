@@ -1,7 +1,7 @@
 {
   "name": "@nicearrack/dsh-translator",
-  "version": "0.2.0",
-  "description": "Youdao-style word-selection translation for the DSH web GUI. Select text anywhere, click the floating button, get a translation from the harness's own LLM — no API keys, no third-party endpoints. 有道风格划词翻译：DSH Web GUI 里划选文本即现悬浮「译」按钮，点击由 harness 自带大模型翻译，无需 API key、不依赖第三方接口。",
+  "version": "0.2.1",
+  "description": "Youdao-style word-selection translation for the DSH web GUI. Select text anywhere, click the floating button, get a translation from the harness's own LLM — no API keys, no third-party endpoints. 有道风格划词翻译：DSH Web GUI 里划选文本即现悬浮翻译按钮，点击由 harness 自带大模型翻译，无需 API key、不依赖第三方接口。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -19,8 +19,9 @@
   "scripts": {
     "build": "node scripts/build.js",
     "prepare": "node scripts/build.js",
+    "test": "node --test \"tests/*.test.mjs\"",
     "test:host": "node scripts/host-sim.mjs",
-    "check": "node --check src/index.js && node -e \"const fs=require('fs');for(const f of ['src/host.js','src/client.js']){new Function(fs.readFileSync(f,'utf8'));}console.log('syntax OK') \""
+    "check": "node --check src/index.js && node -e \"const fs=require('fs');new Function(fs.readFileSync('client/core.js','utf8'));console.log('syntax OK') \""
   },
   "keywords": [
     "dsh",
@@ -46,6 +47,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "dsh": {
@@ -53,7 +55,11 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "platform": "web"
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ]
     }
   }
 }

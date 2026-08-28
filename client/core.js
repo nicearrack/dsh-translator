@@ -6,18 +6,26 @@
 //   window.__ModuleLoader__.load({ id: "<package-name>", factory: (require) => { ... this body ... } })
 //
 // The client runtime mounts the exports (apply + inject) as a browser plugin
-// on the client root context, where 'slots' is a provided service.
-// The Host half is reached over HTTP:
+// on the client root context. 'slots' hosts the UI seats; 'settingsScope'
+// carries the official settings-namespace transport for the config card
+// (the snapshot lives in the value/base/user layers; writes ride the
+// settings transport with a revision fence — no custom config HTTP API).
+//
+// The Host half is reached over HTTP only for the business API:
 //
 //   POST /translator/api/translate        { text, seq }
 //   POST /translator/api/translate-cancel { seq }
+//   POST /translator/api/list-models      { }
+//   POST /translator/api/default-model    { }
 //
-// Adaptations from the dynamic-plugin client (src/client.js):
-//   - CSS is injected through a <style> element (cleaned up with the fiber)
-//     instead of the dynamic `styles.insert` builtin.
-//   - host.call() is replaced by fetch() to the Host HTTP API.
-// Everything else (selection guard, positioning, races, cancellation) is
-// identical.
+// UI strings come from the official dictionary registry (ctx.locale.register
+// 'dsh-translator' below) — both slot registrations declare `locale:` so the
+// `t` seat is used when the runtime delivers it, with a service-backed
+// fallback for runtimes that forward no props to list-slot occupants.
+//
+// CSS is injected through a <style> element whose removal is registered with
+// the plugin fiber; selection guard, positioning, races, and cancellation
+// follow the same logic as the Host-side translation flow.
 
 let react = require('react')
 
@@ -31,6 +39,14 @@ const I18N = {
     reasoningLevel: '推理等级',
     timeout: '超时（毫秒）', maxTokens: '最大输出 token', temperature: '温度',
     save: '保存', saving: '保存中…', discard: '放弃修改', saved: '已保存', saveFailed: '保存失败', overridden: '已覆盖', resetDefault: '恢复默认',
+    errorEmpty: '没有可翻译的文本',
+    errorNoProvider: '未配置可用模型（无 LLM provider）',
+    errorNoModel: 'provider 没有可用模型',
+    errorTranslatedEmpty: '模型未返回译文',
+    errorTimeout: '翻译超时',
+    errorModelFailed: '模型调用失败',
+    errorFailed: '翻译失败',
+    errorRequestFailed: '翻译请求失败',
   },
   en: {
     tooltip: 'Word-selection translation', translating: 'Translating…', truncated: '(may be truncated)',
@@ -41,15 +57,33 @@ const I18N = {
     reasoningLevel: 'Reasoning effort',
     timeout: 'Timeout (ms)', maxTokens: 'Max tokens', temperature: 'Temperature',
     save: 'Save', saving: 'Saving…', discard: 'Discard changes', saved: 'Saved', saveFailed: 'Save failed', overridden: 'Overridden', resetDefault: 'Reset to default',
+    errorEmpty: 'Nothing to translate',
+    errorNoProvider: 'No configured model (no LLM provider)',
+    errorNoModel: 'Provider has no available model',
+    errorTranslatedEmpty: 'The model returned no translation',
+    errorTimeout: 'Translation timed out',
+    errorModelFailed: 'Model call failed',
+    errorFailed: 'Translation failed',
+    errorRequestFailed: 'Translation request failed',
   },
 }
+const ERROR_KEY = {
+  'empty': 'errorEmpty',
+  'no-provider': 'errorNoProvider',
+  'no-model': 'errorNoModel',
+  'translated-empty': 'errorTranslatedEmpty',
+  'timeout': 'errorTimeout',
+  'model-error': 'errorModelFailed',
+}
+// Language OPTIONS keep their self-described names (endonyms), never
+// translated with the UI locale — same convention as the DSH locale picker.
 const LANG_NAMES = {
-  'zh-Hans': { zh: '简体中文', en: 'Simplified Chinese' },
-  'zh-Hant': { zh: '繁體中文', en: 'Traditional Chinese' },
-  'ja-JP': { zh: '日本語', en: 'Japanese' },
-  'ko-KR': { zh: '한국어', en: 'Korean' },
-  'ru-RU': { zh: 'Русский', en: 'Russian' },
-  en: { zh: 'English', en: 'English' },
+  'zh-Hans': '简体中文',
+  'zh-Hant': '繁體中文',
+  'ja-JP': '日本語',
+  'ko-KR': '한국어',
+  'ru-RU': 'Русский',
+  en: 'English',
 }
 function formatTokens(n) {
   const scaled = (v) => v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10)
@@ -57,7 +91,18 @@ function formatTokens(n) {
   if (n < 1000000) return scaled(n / 1000) + 'K'
   return scaled(n / 1000000) + 'M'
 }
-const LocaleCtx = react.createContext({ tr: I18N.zh, lang: (code) => (LANG_NAMES[code] || {}).zh || code })
+// Language OPTIONS keep their self-described names (endonyms) — module-level,
+// never locale-dependent. UI strings otherwise come from the official locale
+// seat `t` (registered below and injected by the slot framework).
+function langName(code) {
+  return LANG_NAMES[code] || code
+}
+
+// UI strings come from the official dictionary registry (ctx.locale), with
+// the slot-framework `t` seat preferred when the runtime delivers it — this
+// overlay's locale option is declared, but this harness version forwards no
+// props to list-slot occupants, so a service-backed fallback supplies `t`.
+const LocaleCtx = react.createContext({ t: I18N.zh })
 function useI18n() {
   return react.useContext(LocaleCtx)
 }
@@ -71,6 +116,9 @@ const TRANSLATOR_CSS = `
 }
 [data-dsh-translator-btn] {
   position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 32px;
   height: 32px;
   margin: 0;
@@ -81,8 +129,6 @@ const TRANSLATOR_CSS = `
   color: var(--dsw-alias-label-primary);
   font-family: inherit;
   font-size: 14px;
-  line-height: 30px;
-  text-align: center;
   cursor: pointer;
   pointer-events: auto;
   transition: transform 120ms ease;
@@ -534,10 +580,11 @@ async function callApi(method, payload) {
   })
   const parsed = await response.json().catch(() => null)
   if (!response.ok || parsed === null || parsed.ok !== true) {
-    const message = parsed && parsed.error
-      ? (parsed.error.message || parsed.error.code)
-      : 'HTTP ' + response.status
-    throw new Error(message)
+    const error = parsed && parsed.error
+    const err = new Error(error ? (error.message || error.code) : 'HTTP ' + response.status)
+    if (error && typeof error.code === 'string') err.code = error.code
+    if (error && typeof error.detail !== 'undefined') err.detail = error.detail
+    throw err
   }
   return parsed.value
 }
@@ -654,6 +701,14 @@ function PinIcon(props) {
   )
 }
 
+// Universal translate glyph: lucide "languages" (MIT) — the 文/A pair as one
+// vector path; stroke style matches the card's Pin/X icons, currentColor.
+function TranslateIcon() {
+  return react.createElement('svg', { viewBox: '0 0 24 24', width: 16, height: 16, 'aria-hidden': true, fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' },
+    react.createElement('path', { d: 'm5 8l6 6m-7 0l6-6l2-3M2 5h12M7 2h1m14 20l-5-10l-5 10m2-4h6' }),
+  )
+}
+
 function XIcon() {
   return react.createElement('svg', { viewBox: '0 0 24 24', width: 13, height: 13, 'aria-hidden': true, fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' },
     react.createElement('path', { d: 'M18 6 6 18' }),
@@ -667,8 +722,9 @@ function ChevronDownIcon() {
   )
 }
 
-function TranslatorRoot() {
-  const { tr, lang } = useI18n()
+function TranslatorRoot(props) {
+  const seat = react.useContext ? useI18n() : null
+  const t = (props && props.t) || seat.t
   const [btn, setBtn] = react.useState(null)
   const [card, setCard] = react.useState(null)
   const [copied, setCopied] = react.useState(null)
@@ -730,23 +786,25 @@ function TranslatorRoot() {
     if (dragging) { dragging = false; suppressNextUp = true }
   }
 
-  react.useEffect(() => {
-    function refreshButton() {
-      if (btnSuppressed) return
-      const info = currentSelection()
-      if (!info) {
-        setBtn(null)
-        stateRef.btnText = null
-        return
-      }
-      const rect = info.rect
-      const left = clamp(rect.right - 8 - 32, 4, window.innerWidth - 36)
-      let top = rect.top - 32 - 6
-      if (top < 4) top = rect.bottom + 6
-      setBtn({ left, top, text: info.text, rect })
-      stateRef.btnText = info.text
+  // Shared by the mouseup flow and the close button: re-show the floating
+  // button when the selection is still present, honor the suppression flag.
+  function refreshButton() {
+    if (btnSuppressed) return
+    const info = currentSelection()
+    if (!info) {
+      setBtn(null)
+      stateRef.btnText = null
+      return
     }
+    const rect = info.rect
+    const left = clamp(rect.right - 8 - 32, 4, window.innerWidth - 36)
+    let top = rect.top - 32 - 6
+    if (top < 4) top = rect.bottom + 6
+    setBtn({ left, top, text: info.text, rect })
+    stateRef.btnText = info.text
+  }
 
+  react.useEffect(() => {
     function onMouseUp(e) {
       if (suppressNextUp) { suppressNextUp = false; return }
       if (dragging) return
@@ -872,6 +930,13 @@ function TranslatorRoot() {
     }
   }, [card])
 
+  function errorText(errCode, fallbackMessage) {
+    const key = errCode && ERROR_KEY[errCode]
+    const text = key ? t[key] : undefined
+    if (text) return text
+    return fallbackMessage || t.errorFailed
+  }
+
   function translate(text) {
     const id = ++requestSeq
     setCard(prev => prev ? { ...prev, status: 'loading', error: null, reqId: id } : prev)
@@ -881,11 +946,11 @@ function TranslatorRoot() {
       if (typeof v.text === 'string') {
         setCard(prev => prev ? { ...prev, status: 'done', result: { target: v.target, text: v.text, engine: v.engine, truncated: v.truncated === true, model: v.model, reasoningEffort: v.reasoningEffort, tokens: v.tokens } } : prev)
       } else {
-        setCard(prev => prev ? { ...prev, status: 'error', error: '翻译失败' } : prev)
+        setCard(prev => prev ? { ...prev, status: 'error', error: errorText() } : prev)
       }
     }).catch((err) => {
       if (unmounted || id !== requestSeq) return
-      setCard(prev => prev ? { ...prev, status: 'error', error: (err && err.message) || '翻译请求失败' } : prev)
+      setCard(prev => prev ? { ...prev, status: 'error', error: errorText(err && err.code, (err && err.message) || t.errorRequestFailed) } : prev)
     })
   }
 
@@ -911,15 +976,15 @@ function TranslatorRoot() {
       key: 'btn',
       'data-dsh-translator-btn': '',
       style: { left: btn.left + 'px', top: btn.top + 'px' },
-      title: tr.tooltip,
+      title: t.tooltip,
       onMouseDown: (e) => e.preventDefault(),
       onClick: openPopup,
-    }, '译'))
+    }, react.createElement(TranslateIcon)))
   }
   if (card) {
     const bodyChildren = []
     if (card.status === 'loading') {
-      bodyChildren.push(react.createElement('div', { key: 'loading' }, tr.translating))
+      bodyChildren.push(react.createElement('div', { key: 'loading' }, t.translating))
     } else if (card.status === 'error') {
       bodyChildren.push(react.createElement('div', { key: 'err', 'data-dsh-translator-error': '' }, card.error))
     } else if (card.result) {
@@ -928,7 +993,7 @@ function TranslatorRoot() {
     const footChildren = []
     if (card.result && card.result.engine === 'model') {
       const metaParts = []
-      if (card.result.target) metaParts.push('→ ' + lang(card.result.target))
+      if (card.result.target) metaParts.push('→ ' + langName(card.result.target))
       if (card.result.model) metaParts.push(card.result.model)
       if (card.result.reasoningEffort) metaParts.push(card.result.reasoningEffort)
       if (card.result.tokens) {
@@ -938,14 +1003,14 @@ function TranslatorRoot() {
       if (metaParts.length) footChildren.push(react.createElement('span', { key: 'dir', 'data-dsh-translator-meta': '' }, metaParts.join(' · ')))
     }
     if (card.result && card.result.truncated) {
-      footChildren.push(react.createElement('span', { key: 'trunc' }, tr.truncated))
+      footChildren.push(react.createElement('span', { key: 'trunc' }, t.truncated))
     }
     if (card.status === 'error') {
-      footChildren.push(react.createElement('button', { key: 'retry', 'data-dsh-translator-act': '', onClick: () => translate(card.text) }, tr.retry))
+      footChildren.push(react.createElement('button', { key: 'retry', 'data-dsh-translator-act': '', onClick: () => translate(card.text) }, t.retry))
     }
     footChildren.push(react.createElement('div', { key: 'actions', 'data-dsh-translator-actions': '' },
-      react.createElement('button', { 'data-dsh-translator-pin': card.pinned ? 'on' : 'off', title: card.pinned ? tr.unpin : tr.pin, onClick: () => setCard(prev => prev ? { ...prev, pinned: !prev.pinned } : prev) }, react.createElement(PinIcon, { filled: card.pinned === true })),
-      react.createElement('button', { 'data-dsh-translator-close': '', title: tr.close, onClick: () => { btnSuppressed = false; cancelLoadingCard(stateRef.card); setCard(null); refreshButton() } }, react.createElement(XIcon)),
+      react.createElement('button', { 'data-dsh-translator-pin': card.pinned ? 'on' : 'off', title: card.pinned ? t.unpin : t.pin, onClick: () => setCard(prev => prev ? { ...prev, pinned: !prev.pinned } : prev) }, react.createElement(PinIcon, { filled: card.pinned === true })),
+      react.createElement('button', { 'data-dsh-translator-close': '', title: t.close, onClick: () => { btnSuppressed = false; cancelLoadingCard(stateRef.card); setCard(null); refreshButton() } }, react.createElement(XIcon)),
     ))
     children.push(react.createElement('div', {
       key: 'card',
@@ -956,13 +1021,21 @@ function TranslatorRoot() {
       react.createElement('div', { 'data-dsh-translator-source': '', onMouseDown: beginDrag, onClick: () => copy('source') }, card.text),
       react.createElement('div', { 'data-dsh-translator-body': '', onClick: () => copy('result') }, ...bodyChildren),
       react.createElement('div', { 'data-dsh-translator-foot': '' }, ...footChildren),
-      copied ? react.createElement('div', { key: 'copied', 'data-dsh-translator-copied': '' }, copied === 'source' ? tr.copiedSource : tr.copied) : null,
+      copied ? react.createElement('div', { key: 'copied', 'data-dsh-translator-copied': '' }, copied === 'source' ? t.copiedSource : t.copied) : null,
     ))
   }
   return react.createElement('div', { 'data-dsh-translator-root': '' }, ...children)
 }
 
-const DEFAULTS = { primaryLanguage: 'zh-Hans', customModel: { provider: '', model: '' }, reasoningEffort: 'low', timeoutMs: 30000, maxTokens: 1024, temperature: 0.3 }
+// Last-resort defaults. The official settings scope snapshot carries the
+// composition layer as `base` and the raw user section as `user` (field
+// PRESENCE there = user-overridden), so the card never needs its own copy of
+// the schema defaults except as this fallback while `base` is absent.
+const FALLBACK_DEFAULTS = { primaryLanguage: 'zh-Hans', customModel: { provider: '', model: '' }, reasoningEffort: 'low', timeoutMs: 30000, maxTokens: 1024, temperature: 0.3 }
+const CONFIG_FIELDS = ['primaryLanguage', 'customModel', 'reasoningEffort', 'timeoutMs', 'maxTokens', 'temperature']
+function userHas(field, user) {
+  return !!user && typeof user === 'object' && Object.prototype.hasOwnProperty.call(user, field)
+}
 function sameConfig(a, b) {
   if (a === b) return true
   if (!a || !b) return false
@@ -996,16 +1069,24 @@ function ConfigSelect(props) {
     ) : null,
   )
 }
-function ConfigCard() {
-  const { tr, lang } = useI18n()
+function ConfigCard(props) {
+  const scope = props.scope
+  const seat = useI18n()
+  const t = (props && props.t) || seat.t
+  // Official settings transport (docs/reference/cookbook/adding-a-settings-card):
+  // snapshot = { status, value, base, user, revision, writable, mode }.
+  const [snap, setSnap] = react.useState(() => scope.getSnapshot())
   const [cfg, setCfg] = react.useState(null)
-  const [base, setBase] = react.useState(null)
   const [models, setModels] = react.useState([])
   const [defaultModel, setDefaultModel] = react.useState(null)
   const [open, setOpen] = react.useState(false)
   const [status, setStatus] = react.useState('')
   const [saving, setSaving] = react.useState(false)
   const cardRef = react.useRef(null)
+  react.useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [])
+  react.useEffect(() => {
+    if (cfg === null && snap.status === 'ready' && snap.value) setCfg(snap.value)
+  }, [snap, cfg])
   react.useEffect(() => {
     if (!open || !cardRef.current) return
     const t = setTimeout(() => {
@@ -1013,49 +1094,76 @@ function ConfigCard() {
     }, 40)
     return () => clearTimeout(t)
   }, [open])
-  function load() {
-    callApi('get-config').then((value) => { if (value && typeof value === 'object') { setCfg(value); setBase(value) } }).catch(() => {})
+  react.useEffect(() => {
     callApi('list-models').then((value) => { if (Array.isArray(value)) setModels(value) }).catch(() => {})
     callApi('default-model').then((value) => { if (value && typeof value === 'object') setDefaultModel(value) }).catch(() => {})
+  }, [])
+  if (snap.status !== 'ready' || !snap.value || cfg === null) return null
+  const value = snap.value
+  const base = snap.base || FALLBACK_DEFAULTS
+  const layerField = (field) => {
+    const b = base && typeof base === 'object' ? base[field] : undefined
+    return (b !== undefined && b !== null) ? b : FALLBACK_DEFAULTS[field]
   }
-  react.useEffect(load, [])
-  if (!cfg || !base) return null
   const set = (k, v) => setCfg(prev => prev ? { ...prev, [k]: v } : prev)
-  const dirty = !sameConfig(cfg, base)
+  // Dirty = the draft differs from the committed snapshot, nothing else:
+  // restoring a field to its layer value while the committed value equals
+  // that layer means there is nothing to persist, so 保存/放弃修改 stay
+  // disabled. A user-layer entry that merely repeats the default (left over
+  // from a full-section write) shows no badge either — the badge tracks the
+  // effective difference, and stale entries are cleaned on the next real save.
+  const dirty = !sameConfig(cfg, value)
   const customKey = (cfg.customModel && cfg.customModel.provider && cfg.customModel.model)
     ? (cfg.customModel.provider + '/' + cfg.customModel.model) : ''
   const modelKey = customKey || (defaultModel ? (defaultModel.provider + '/' + defaultModel.model) : '')
+  // Live override state: a field is shown as 「已覆盖」 when its effective
+  // value leaves the composition layer (row config). Draft-based, so the
+  // badge vanishes the moment「恢复默认」restores the layer value and appears
+  // the moment a typed value leaves it — before anything is saved. Presence
+  // alone (a user-layer entry equal to the default) does not light the badge.
   function isOverridden(field) {
-    if (field === 'customModel') {
-      const def = defaultModel ? (defaultModel.provider + '/' + defaultModel.model) : ''
-      return !!modelKey && modelKey !== def
-    }
-    return cfg[field] !== DEFAULTS[field]
+    return JSON.stringify(cfg[field]) !== JSON.stringify(layerField(field))
   }
   function resetField(field) {
-    if (field === 'customModel') set('customModel', { provider: '', model: '' })
-    else set(field, DEFAULTS[field])
+    const v = layerField(field)
+    if (field === 'customModel') set('customModel', { provider: (v && v.provider) || '', model: (v && v.model) || '' })
+    else set(field, v)
   }
   function save() {
+    const ops = []
+    for (const field of CONFIG_FIELDS) {
+      const changed = JSON.stringify(cfg[field]) !== JSON.stringify(value[field])
+      const atLayer = JSON.stringify(cfg[field]) === JSON.stringify(layerField(field))
+      // A real change: set the user choice, or clear it when it now equals
+      // the layer. A stale user-layer entry equal to the default is cleaned
+      // together with a real save (its presence is invisible to the badge).
+      if (changed) {
+        ops.push(atLayer ? { op: 'unset', path: [field] } : { op: 'set', path: [field], value: cfg[field] })
+      } else if (atLayer && userHas(field, snap.user)) {
+        ops.push({ op: 'unset', path: [field] })
+      }
+    }
+    if (ops.length === 0) return
     setSaving(true); setStatus('')
-    callApi('set-config', { patch: cfg }).then((value) => {
-      setSaving(false); setStatus(tr.saved)
-      if (value && typeof value === 'object') setBase(value)
+    scope.mutate(ops, snap.revision).then(() => {
+      setSaving(false); setStatus(t.saved)
       setTimeout(() => setStatus(''), 1500)
     }).catch((err) => {
       setSaving(false)
-      setStatus((err && err.message) || tr.saveFailed)
+      setStatus((err && err.message) || t.saveFailed)
       setTimeout(() => setStatus(''), 1500)
     })
   }
-  function discard() { setStatus(''); setCfg(base) }
+  function discard() {
+    setStatus(''); setCfg(value)
+  }
   function fieldHead(labelText, field) {
     const over = isOverridden(field)
     return react.createElement('div', { 'data-dsh-translator-field-head': '' },
       react.createElement('span', { 'data-dsh-translator-field-label': '' }, labelText),
       over ? react.createElement('span', { 'data-dsh-translator-field-badges': '' },
-        react.createElement('span', { 'data-dsh-translator-badge': '' }, tr.overridden),
-        react.createElement('button', { 'data-dsh-translator-reset': '', type: 'button', onClick: () => resetField(field) }, tr.resetDefault),
+        react.createElement('span', { 'data-dsh-translator-badge': '' }, t.overridden),
+        react.createElement('button', { 'data-dsh-translator-reset': '', type: 'button', onClick: () => resetField(field) }, t.resetDefault),
       ) : null,
     )
   }
@@ -1063,50 +1171,50 @@ function ConfigCard() {
   return react.createElement('div', { 'data-dsh-translator-plugin-card': '', 'data-open': open ? '1' : undefined, ref: cardRef },
     react.createElement('button', { 'data-dsh-translator-card-header': '', 'aria-expanded': open ? 'true' : 'false', onClick: () => setOpen(!open) },
       react.createElement('span', { 'data-dsh-translator-card-headtext': '' },
-        react.createElement('span', { 'data-dsh-translator-card-name': '' }, tr.cardTitle),
-        react.createElement('span', { 'data-dsh-translator-card-desc': '' }, tr.cardDesc),
+        react.createElement('span', { 'data-dsh-translator-card-name': '' }, t.cardTitle),
+        react.createElement('span', { 'data-dsh-translator-card-desc': '' }, t.cardDesc),
       ),
       react.createElement('span', { 'data-dsh-translator-card-chevron': open ? 'open' : '' }, react.createElement(ChevronDownIcon)),
     ),
     open ? react.createElement('div', { 'data-dsh-translator-card-body': '', 'data-dsh-translator-settings': '' },
       react.createElement('div', { 'data-dsh-translator-field': '' },
-        fieldHead(tr.primaryLanguage, 'primaryLanguage'),
-        react.createElement(ConfigSelect, { value: cfg.primaryLanguage, onChange: (v) => set('primaryLanguage', v), options: langCodes.map(c => ({ value: c, label: lang(c) })) }),
+        fieldHead(t.primaryLanguage, 'primaryLanguage'),
+        react.createElement(ConfigSelect, { value: cfg.primaryLanguage, onChange: (v) => set('primaryLanguage', v), options: langCodes.map(c => ({ value: c, label: langName(c) })) }),
       ),
       react.createElement('div', { 'data-dsh-translator-field': '' },
-        fieldHead(tr.model, 'customModel'),
+        fieldHead(t.model, 'customModel'),
         react.createElement(ConfigSelect, { value: modelKey, onChange: (v) => { const i = v.indexOf('/'); if (i > 0) set('customModel', { provider: v.slice(0, i), model: v.slice(i + 1) }) }, options: models.map(m => ({ value: m.provider + '/' + m.model, label: m.label })) }),
       ),
       react.createElement('div', { 'data-dsh-translator-field-row': '' },
         react.createElement('div', { 'data-dsh-translator-field': '' },
-          fieldHead(tr.reasoningLevel, 'reasoningEffort'),
+          fieldHead(t.reasoningLevel, 'reasoningEffort'),
           react.createElement(ConfigSelect, { value: cfg.reasoningEffort, onChange: (v) => set('reasoningEffort', v), options: [{ value: 'off', label: 'off' }, { value: 'low', label: 'low' }, { value: 'high', label: 'high' }, { value: 'max', label: 'max' }] }),
         ),
         react.createElement('div', { 'data-dsh-translator-field': '' },
-          fieldHead(tr.maxTokens, 'maxTokens'),
+          fieldHead(t.maxTokens, 'maxTokens'),
           react.createElement('input', { type: 'number', value: cfg.maxTokens, min: 1, onChange: (e) => set('maxTokens', Number(e.target.value) || 1024) }),
         ),
       ),
       react.createElement('div', { 'data-dsh-translator-field-row': '' },
         react.createElement('div', { 'data-dsh-translator-field': '' },
-          fieldHead(tr.timeout, 'timeoutMs'),
+          fieldHead(t.timeout, 'timeoutMs'),
           react.createElement('input', { type: 'number', value: cfg.timeoutMs, min: 1000, onChange: (e) => set('timeoutMs', Number(e.target.value) || 30000) }),
         ),
         react.createElement('div', { 'data-dsh-translator-field': '' },
-          fieldHead(tr.temperature, 'temperature'),
+          fieldHead(t.temperature, 'temperature'),
           react.createElement('input', { type: 'number', step: 0.1, min: 0, max: 2, value: cfg.temperature, onChange: (e) => set('temperature', Number(e.target.value) || 0.3) }),
         ),
       ),
       react.createElement('div', { 'data-dsh-translator-card-footer': '' },
-        react.createElement('button', { 'data-dsh-translator-card-discard': '', onClick: discard, disabled: !dirty || saving }, tr.discard),
-        react.createElement('button', { 'data-dsh-translator-card-save': '', onClick: save, disabled: !dirty || saving }, saving ? tr.saving : tr.save),
+        react.createElement('button', { 'data-dsh-translator-card-discard': '', onClick: discard, disabled: !dirty || saving }, t.discard),
+        react.createElement('button', { 'data-dsh-translator-card-save': '', onClick: save, disabled: !dirty || saving }, saving ? t.saving : t.save),
         status ? react.createElement('span', { 'data-dsh-translator-settings-status': '' }, status) : null,
       ),
     ) : null,
   )
 }
 
-const inject = ['slots']
+const inject = ['slots', 'settingsScope', 'locale']
 
 function apply(ctx) {
   const styleEl = document.createElement('style')
@@ -1114,31 +1222,36 @@ function apply(ctx) {
   document.head.appendChild(styleEl)
   ctx.effect(() => () => { styleEl.remove() }, 'dsh-translator: styles')
 
-  const slots = ctx.get('slots')
+  const slots = ctx.slots
   if (slots === undefined) return
-  const locale = ctx.get('locale')
+  // Official settings-namespace scope (docs/reference/cookbook/adding-a-settings-card):
+  // snapshot and writes ride the settings transport; the business API stays HTTP.
+  const scope = ctx.settingsScope.bind({ namespace: 'dsh-translator' })
+  // Official locale wiring (the slots register options below declare the
+  // namespace, which puts the typed `t` seat on the component props and
+  // re-renders it on locale switches).
+  ctx.locale.register('dsh-translator', I18N)
+  const locale = ctx.locale
   function LocaleBound(props) {
-    const [loc, setLoc] = react.useState(() => {
+    const [active, setActive] = react.useState(() => {
       try { return (locale && locale.getSnapshot && locale.getSnapshot().active) || 'zh' } catch (err) { return 'zh' }
     })
     react.useEffect(() => {
       if (!locale || !locale.subscribe) return
       const un = locale.subscribe(() => {
-        try { setLoc((locale.getSnapshot && locale.getSnapshot().active) || 'zh') } catch (err) { /* ignore */ }
+        try { setActive((locale.getSnapshot && locale.getSnapshot().active) || 'zh') } catch (err) { /* ignore */ }
       })
       return () => { if (un) un() }
     }, [])
-    const key = loc === 'en' ? 'en' : 'zh'
-    const tr = I18N[key]
-    const lang = (code) => (LANG_NAMES[code] || {})[key] || code
-    return react.createElement(LocaleCtx.Provider, { value: { tr, lang } }, props.children)
+    const t = I18N[active === 'en' ? 'en' : 'zh']
+    return react.createElement(LocaleCtx.Provider, { value: { t } }, props.children)
   }
   slots.inject('shell.overlay', () => slots.register(
-    { name: 'shell.overlay', id: 'dsh-translator-overlay' },
+    { name: 'shell.overlay', id: 'dsh-translator-overlay', locale: 'dsh-translator' },
     () => react.createElement(LocaleBound, null, react.createElement(TranslatorRoot)),
   ))
   slots.inject('settings.plugin.item', () => slots.register(
-    { name: 'settings.plugin.item', key: 'dsh-translator' },
-    () => react.createElement(LocaleBound, null, react.createElement(ConfigCard)),
+    { name: 'settings.plugin.item', key: 'dsh-translator', locale: 'dsh-translator' },
+    () => react.createElement(LocaleBound, null, react.createElement(ConfigCard, { scope })),
   ))
 }
