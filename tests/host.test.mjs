@@ -9,6 +9,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { apply as applyPlugin, Config, inject as pluginInject, name as pluginName } from '../src/index.js'
+import { resetProviderHealth } from '../src/free-translate.js'
 
 /** The shared cross-copy volatile write symbol (cosmokit's protocol). */
 const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write')
@@ -80,10 +81,50 @@ async function hit(routes, path, payload) {
 
 const TRANSLATE = '/api/translator/translate'
 
+/**
+ * Serve the public provider endpoints from a fake `fetch` while `run` executes.
+ *
+ * The `api` engine talks to the outside world itself, so the only way to drive
+ * it without a network is to stand in for `fetch`. `handler(url)` answers with
+ * `{ json }`, `{ text }`, or a falsy value for "no route". The provider health
+ * map is reset on both sides so one case's cooldowns cannot leak into another.
+ */
+async function withFetch(handler, run) {
+  const original = globalThis.fetch
+  const seen = []
+  resetProviderHealth()
+  globalThis.fetch = async (url, init) => {
+    const href = String(url)
+    seen.push(href)
+    const reply = handler(href, init)
+    if (!reply) return new Response('not found', { status: 404 })
+    if (reply.text !== undefined) return new Response(reply.text, { status: reply.status || 200 })
+    return new Response(JSON.stringify(reply.json), {
+      status: reply.status || 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    return await run(seen)
+  } finally {
+    globalThis.fetch = original
+    resetProviderHealth()
+  }
+}
+
+/** A Bing translator page whose signature markers the parser can read. */
+const BING_PORTAL = '<html>IG:"ABCDEF0123456789"'
+  + '<div data-iid="translator.5023">'
+  + 'var params_AbusePreventionHelper = [1700000000000,"bing-token",3600000];</html>'
+
 test('Config schema: defaults filled, invalid values rejected', () => {
   assert.equal(pluginName, 'dsh-translator')
   assert.deepEqual([...pluginInject].sort(), ['llm', 'timer'])
   const cfg = plain(Config({}))
+  // The keyless API engine is the default: a fresh install translates with
+  // nothing configured at all.
+  assert.equal(cfg.engine, 'api')
+  assert.equal(cfg.apiProvider, 'auto')
   assert.equal(cfg.primaryLanguage, 'zh-Hans')
   assert.equal(cfg.reasoningEffort, 'low')
   assert.equal(cfg.timeoutMs, 30000)
@@ -92,6 +133,14 @@ test('Config schema: defaults filled, invalid values rejected', () => {
   assert.deepEqual(cfg.customModel, { provider: '', model: '' })
   assert.throws(() => Config({ reasoningEffort: 'bogus' }))
   assert.throws(() => Config({ timeoutMs: 100 }))
+  assert.throws(() => Config({ engine: 'bogus' }))
+  assert.throws(() => Config({ apiProvider: 'bogus' }))
+})
+
+test('Config schema: every apiProvider value the client offers is accepted', () => {
+  for (const id of ['auto', 'tencent', 'bing', 'volcengine', 'mymemory']) {
+    assert.equal(plain(Config({ apiProvider: id })).apiProvider, id)
+  }
 })
 
 test('apply registers exact authenticated /api routes through ctx.connection', () => {
@@ -113,7 +162,7 @@ test('apply registers exact authenticated /api routes through ctx.connection', (
 })
 
 test('translate: success envelope + stream parameters', async () => {
-  const { routes, calls } = makeCtx()
+  const { routes, calls } = makeCtx(undefined, Config({ engine: 'model' }))
   const out = await hit(routes, TRANSLATE, { text: 'Hello world' })
   assert.equal(out.status, 200)
   assert.match(out.headers.get('content-type'), /application\/json/)
@@ -135,7 +184,7 @@ test('translate: success envelope + stream parameters', async () => {
 })
 
 test('translate: direction detection (CJK text → en)', async () => {
-  const { routes } = makeCtx()
+  const { routes } = makeCtx(undefined, Config({ engine: 'model' }))
   const out = await hit(routes, TRANSLATE, { text: '你好世界' })
   assert.equal(out.body.value.target, 'en')
 })
@@ -148,7 +197,7 @@ test('translate: empty text rejected', async () => {
 })
 
 test('translate: long text capped at 2000 chars', async () => {
-  const { routes, calls } = makeCtx()
+  const { routes, calls } = makeCtx(undefined, Config({ engine: 'model' }))
   await hit(routes, TRANSLATE, { text: 'x'.repeat(3000) })
   assert.equal(calls[0].messages[0].content[0].text.length, 2000)
 })
@@ -158,7 +207,7 @@ test('translate: provider failure → model-error code + detail', async () => {
   failing.stream = () => (async function* () {
     yield { type: 'finish', reason: { kind: 'error', failure: { message: 'provider exploded', code: 'X' } } }
   })()
-  const { routes } = makeCtx(failing)
+  const { routes } = makeCtx(failing, Config({ engine: 'model' }))
   const out = await hit(routes, TRANSLATE, { text: 'hello' })
   assert.equal(out.body.ok, false)
   assert.equal(out.body.error.code, 'model-error')
@@ -168,7 +217,7 @@ test('translate: provider failure → model-error code + detail', async () => {
 test('translate: reasoning effort stripped when the model cannot support it', async () => {
   const llm = makeFakeLlm()
   llm.resolveModelInfo = async () => ({ reasoning: { efforts: [{ id: 'low' }] } })
-  const c = makeCtx(llm, Config({ reasoningEffort: 'max' }))
+  const c = makeCtx(llm, Config({ engine: 'model', reasoningEffort: 'max' }))
   const out = await hit(c.routes, TRANSLATE, { text: 'hello' })
   assert.equal(out.body.ok, true)
   assert.equal(c.calls[0].reasoningEffort, undefined)
@@ -181,7 +230,7 @@ test('translate-cancel: seq-matched cancel on an in-flight run', async () => {
     await new Promise(res => setTimeout(res, 300))
     yield { type: 'finish', reason: { kind: 'stop' } }
   })()
-  const { routes } = makeCtx(slow)
+  const { routes } = makeCtx(slow, Config({ engine: 'model' }))
   const pending = routes.get(TRANSLATE).fetch(new Request('http://127.0.0.1:3080' + TRANSLATE, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -211,14 +260,14 @@ test('default-model falls back to first provider/model', async () => {
 })
 
 test('row config (cordis.yml) is applied', async () => {
-  const { routes, calls } = makeCtx(undefined, Config({ maxTokens: 512, reasoningEffort: 'high', timeoutMs: 45000 }))
+  const { routes, calls } = makeCtx(undefined, Config({ engine: 'model', maxTokens: 512, reasoningEffort: 'high', timeoutMs: 45000 }))
   await hit(routes, TRANSLATE, { text: 'hello' })
   assert.equal(calls[0].maxTokens, 512)
   assert.equal(calls[0].reasoningEffort, 'high')
 })
 
 test('a live settings edit updates an in-flight-less plugin without a reload', async () => {
-  const config = Config({ maxTokens: 512 })
+  const config = Config({ engine: 'model', maxTokens: 512 })
   const { routes, calls } = makeCtx(undefined, config)
   await hit(routes, TRANSLATE, { text: 'hello' })
   assert.equal(calls[0].maxTokens, 512)
@@ -249,7 +298,7 @@ test('stalled stream + timeout: the abort signal settles the handler', async () 
     yield { type: 'text-delta', index: 0, text: 'unreachable' }
     yield { type: 'finish', reason: { kind: 'stop' } }
   })()
-  const { routes } = makeCtx(stalled, Config({ timeoutMs: 1200 }))
+  const { routes } = makeCtx(stalled, Config({ engine: 'model', timeoutMs: 1200 }))
   const started = Date.now()
   const out = await hit(routes, TRANSLATE, { text: 'hello' })
   assert.equal(out.body.ok, false)
@@ -268,7 +317,7 @@ test('cancel aborts the underlying stream instead of leaving it running', async 
     } catch { /* settle the iterator */ }
     yield { type: 'finish', reason: { kind: 'stop' } }
   })()
-  const { routes } = makeCtx(slow)
+  const { routes } = makeCtx(slow, Config({ engine: 'model' }))
   const pending = routes.get(TRANSLATE).fetch(new Request('http://127.0.0.1:3080' + TRANSLATE, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -278,4 +327,126 @@ test('cancel aborts the underlying stream instead of leaving it running', async 
   await hit(routes, '/api/translator/translate-cancel', { seq: 1 })
   await pending
   assert.equal(aborted, true, 'the underlying stream must be aborted on cancel')
+})
+
+// ---------------------------------------------------------------------------
+// The keyless `api` engine. `fetch` is faked; nothing here reaches the network.
+// ---------------------------------------------------------------------------
+
+test('translate: the api engine is the default and needs no model at all', async () => {
+  const { routes, calls } = makeCtx()
+  const out = await withFetch((href) => {
+    if (href.includes('transmart.qq.com')) {
+      return { json: { header: { ret_code: 'succ' }, auto_translation: ['你好，世界'] } }
+    }
+    return null
+  }, () => hit(routes, TRANSLATE, { text: 'Hello world' }))
+
+  assert.equal(out.body.ok, true)
+  assert.equal(out.body.value.engine, 'api')
+  assert.equal(out.body.value.provider, 'tencent')
+  assert.equal(out.body.value.text, '你好，世界')
+  assert.equal(out.body.value.target, 'zh-Hans')
+  // No model was picked and no stream opened: the free path is independent of
+  // whatever the harness happens to have configured.
+  assert.equal(calls.length, 0)
+})
+
+test('translate: the api chain falls over to the next provider', async () => {
+  const { routes } = makeCtx()
+  const out = await withFetch((href) => {
+    if (href.includes('transmart.qq.com')) return { status: 500, text: 'tencent down' }
+    if (href.includes('bing.com/translator')) return { text: BING_PORTAL }
+    if (href.includes('ttranslatev3')) return { json: [{ translations: [{ text: '你好，世界' }] }] }
+    return null
+  }, () => hit(routes, TRANSLATE, { text: 'Hello world' }))
+
+  assert.equal(out.body.ok, true)
+  assert.equal(out.body.value.provider, 'bing')
+  assert.equal(out.body.value.text, '你好，世界')
+})
+
+test('translate: a provider that failed is benched for the following request', async () => {
+  const { routes } = makeCtx()
+  await withFetch((href) => {
+    if (href.includes('transmart.qq.com')) return { status: 500, text: 'tencent down' }
+    if (href.includes('bing.com/translator')) return { text: BING_PORTAL }
+    if (href.includes('ttranslatev3')) return { json: [{ translations: [{ text: '你好' }] }] }
+    return null
+  }, async (seen) => {
+    const first = await hit(routes, TRANSLATE, { text: 'Hello world' })
+    const second = await hit(routes, TRANSLATE, { text: 'Hello again' })
+    assert.equal(first.body.value.provider, 'bing')
+    assert.equal(second.body.value.provider, 'bing')
+    // The dead endpoint is not retried on the very next translation.
+    assert.equal(seen.filter(href => href.includes('transmart.qq.com')).length, 1)
+    // The portal signature is minted once and then reused.
+    assert.equal(seen.filter(href => href.endsWith('/translator')).length, 1)
+  })
+})
+
+test('translate: an echoed answer is rejected rather than shown as a translation', async () => {
+  // Measured provider behaviour: an unsupported direction still answers 200
+  // with the source text. Accepting it would show the user their own sentence.
+  const { routes } = makeCtx()
+  const out = await withFetch((href) => {
+    if (href.includes('transmart.qq.com')) {
+      return { json: { header: { ret_code: 'succ' }, auto_translation: ['Hello world'] } }
+    }
+    if (href.includes('bing.com/translator')) return { text: BING_PORTAL }
+    if (href.includes('ttranslatev3')) return { json: [{ translations: [{ text: 'Hello world' }] }] }
+    if (href.includes('volcengine')) return { json: { base_resp: { status_code: 0 }, translation: 'Hello world' } }
+    if (href.includes('mymemory')) {
+      return { json: { responseStatus: 200, responseData: { translatedText: 'Hello world' } } }
+    }
+    return null
+  }, () => hit(routes, TRANSLATE, { text: 'Hello world' }))
+
+  assert.equal(out.body.ok, false)
+  assert.equal(out.body.error.code, 'api-failed')
+  assert.match(out.body.error.message, /echoed the source text/)
+})
+
+test('translate: every provider failing reports api-failed, never a model code', async () => {
+  const { routes } = makeCtx()
+  const out = await withFetch(() => ({ status: 503, text: 'down' }),
+    () => hit(routes, TRANSLATE, { text: 'Hello world' }))
+
+  assert.equal(out.body.ok, false)
+  assert.equal(out.body.error.code, 'api-failed')
+  assert.ok(Array.isArray(out.body.error.detail), 'the attempts are reported for diagnosis')
+  assert.ok(out.body.error.detail.length >= 2)
+})
+
+test('translate: mymemory is skipped for text beyond its 500-byte cap', async () => {
+  const { routes } = makeCtx()
+  await withFetch((href) => {
+    if (href.includes('mymemory')) return { json: { responseStatus: 200, responseData: { translatedText: '不应该被调用' } } }
+    return { status: 503, text: 'down' }
+  }, async (seen) => {
+    await hit(routes, TRANSLATE, { text: 'x'.repeat(600) })
+    assert.equal(seen.some(href => href.includes('mymemory')), false)
+  })
+})
+
+test('translate: a hanging chain still settles on the api timeout', async () => {
+  const { routes } = makeCtx(undefined, Config({ engine: 'api', timeoutMs: 1000 }))
+  const original = globalThis.fetch
+  resetProviderHealth()
+  globalThis.fetch = (url, init) => new Promise((resolve, reject) => {
+    if (init && init.signal) {
+      init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+    }
+  })
+  try {
+    const started = Date.now()
+    const out = await hit(routes, TRANSLATE, { text: 'Hello world' })
+    assert.equal(out.body.ok, false)
+    // The overall cap surfaces as the same code the model engine reports.
+    assert.equal(out.body.error.code, 'timeout')
+    assert.ok(Date.now() - started < 5000, 'the handler must settle at its own timeout')
+  } finally {
+    globalThis.fetch = original
+    resetProviderHealth()
+  }
 })

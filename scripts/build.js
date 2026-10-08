@@ -2,9 +2,10 @@
 // during git installs and before `npm publish`).
 //
 // Produces:
-//   lib/index.js   — packaged Host half (copy of src/index.js)
-//   lib/client.js  — client-modules bundle (core wrapped into
-//                    window.__ModuleLoader__.load({ id, factory }))
+//   lib/index.js          — packaged Host half (copy of src/index.js)
+//   lib/free-translate.js — the keyless public provider chain it imports
+//   lib/client.js         — client-modules bundle (core wrapped into
+//                           window.__ModuleLoader__.load({ id, factory }))
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,6 +17,11 @@ await mkdir(join(root, 'lib'), { recursive: true })
 
 const index = await readFile(join(root, 'src/index.js'), 'utf8')
 await writeFile(join(root, 'lib/index.js'), index)
+
+// The Host half is more than one file: it imports the provider chain, so every
+// module under src/ ships beside it under the same relative name.
+const chain = await readFile(join(root, 'src/free-translate.js'), 'utf8')
+await writeFile(join(root, 'lib/free-translate.js'), chain)
 
 const core = await readFile(join(root, 'client/core.js'), 'utf8')
 const bundle = `window.__ModuleLoader__.load({
@@ -33,4 +39,4 @@ ${core}
 `
 
 await writeFile(join(root, 'lib/client.js'), bundle)
-console.log(`built lib/index.js + lib/client.js (bundle id: ${pkg.name})`)
+console.log(`built lib/index.js + lib/free-translate.js + lib/client.js (bundle id: ${pkg.name})`)

@@ -26,12 +26,21 @@
  * reads them through {@link readConfig}. There is no settings package import
  * and no separate config source to keep in sync.
  *
- * The translation core streams through `ctx.llm` with the session's configured
- * default model, a timeout, a single in-flight run, and seq-matched
- * cancellation.
+ * Two engines answer a translation, chosen by the `engine` field:
+ *
+ *   `api`   (default) — keyless public web endpoints, walked as a fallback
+ *           chain by {@link translateFree} in `free-translate.js`. No account,
+ *           no API key, no token to paste, nothing to configure.
+ *   `model` — streams through `ctx.llm` with the session's configured default
+ *           model, a timeout, a single in-flight run, and seq-matched
+ *           cancellation. This is what the 0.3 line did unconditionally.
+ *
+ * Both share the direction detection, the 2000-character cap, the single-flight
+ * run slot and the seq-matched cancellation.
  */
 import z from '@deepseek-ai/schemastery'
 import { isVolatile } from '@deepseek-ai/cosmokit'
+import { translateFree, PROVIDERS } from './free-translate.js'
 
 export const name = 'dsh-translator'
 
@@ -49,6 +58,12 @@ const API_BASE = '/api/translator'
 const PRIMARY_LANGS = ['zh-Hans', 'zh-Hant', 'ja-JP', 'ko-KR', 'ru-RU']
 const REASONING_EFFORTS = ['off', 'low', 'high', 'max']
 
+/** Engines the plugin can translate with. */
+const ENGINES = ['api', 'model']
+
+/** `auto` plus every keyless provider, i.e. what `apiProvider` accepts. */
+const API_PROVIDERS = ['auto', ...PROVIDERS]
+
 /**
  * Plugin configuration (schemastery schema, Cordis Standard Schema).
  *
@@ -57,8 +72,13 @@ const REASONING_EFFORTS = ['off', 'low', 'high', 'max']
  * writes, so the two layers can never drift apart. `.volatile()` marks the
  * fields a settings page may edit without remounting the plugin; without it
  * the entry carries no form at all.
+ *
+ * `api` is the default engine on purpose: it needs nothing configured, while
+ * the `model` half of the schema only takes effect once a user selects it.
  */
 export const Config = z.object({
+  engine: z.union(ENGINES.map(e => z.const(e))).default('api').volatile(),
+  apiProvider: z.union(API_PROVIDERS.map(p => z.const(p))).default('auto').volatile(),
   primaryLanguage: z.union([z.const('zh-Hans'), z.const('zh-Hant'), z.const('ja-JP'), z.const('ko-KR'), z.const('ru-RU')]).default('zh-Hans').volatile(),
   customModel: z.object({
     provider: z.string().default('').volatile(),
@@ -94,7 +114,11 @@ function readConfig(config) {
   const root = config !== null && typeof config === 'object' ? config : Config({})
   const primaryLanguage = plain(root.primaryLanguage)
   const customModel = root.customModel !== null && typeof root.customModel === 'object' ? root.customModel : {}
+  const engine = plain(root.engine)
+  const apiProvider = plain(root.apiProvider)
   return {
+    engine: ENGINES.includes(engine) ? engine : 'api',
+    apiProvider: API_PROVIDERS.includes(apiProvider) ? apiProvider : 'auto',
     primaryLanguage: PRIMARY_LANGS.includes(primaryLanguage) ? primaryLanguage : 'zh-Hans',
     customModel: {
       provider: String(plain(customModel.provider) ?? ''),
@@ -320,6 +344,37 @@ export function apply(ctx, config) {
     const c = readConfig(config)
     const target = resolveTarget(text, c)
     try {
+      // Engine `api`: the keyless public chain, no model lookup at all — it
+      // must work on a harness with no LLM provider configured.
+      if (c.engine === 'api') {
+        const controller = new AbortController()
+        let timedOut = false
+        run.signal = controller.signal
+        run.abort = () => controller.abort()
+        // The chain applies its own per-provider slices; this is the overall
+        // cap that turns a hung endpoint into the same `timeout` code the
+        // model engine reports.
+        const disposeTimeout = ctx.timeout(() => { timedOut = true; controller.abort() }, c.timeoutMs)
+        try {
+          const result = await translateFree(text, target, {
+            provider: c.apiProvider,
+            timeoutMs: c.timeoutMs,
+            signal: controller.signal,
+          })
+          if (run.cancelled) return { ok: false, error: { code: 'cancelled', message: 'cancelled' } }
+          return { ok: true, value: { target, text: result.text, engine: 'api', provider: result.provider } }
+        } catch (err) {
+          if (run.cancelled) return { ok: false, error: { code: 'cancelled', message: 'cancelled' } }
+          if (timedOut) {
+            const e = new Error('translation timed out (' + c.timeoutMs + ' ms)')
+            e.code = 'timeout'; e.detail = c.timeoutMs
+            throw e
+          }
+          throw err
+        } finally {
+          disposeTimeout()
+        }
+      }
       const picked = await pickModel(c)
       if (run.cancelled) return { ok: false, error: { code: 'cancelled', message: 'cancelled' } }
       const result = await translateWithModel(picked.provider, picked.model, text, target, c, run)

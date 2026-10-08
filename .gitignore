@@ -6,6 +6,9 @@ dist/
 # stability harness (playwright runtime, downloaded browsers, reports)
 stability/
 
+# playwright MCP snapshots/console logs from a browser probe
+.playwright-mcp/
+
 # editors / OS
 .DS_Store
 *.swp

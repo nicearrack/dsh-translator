@@ -19,10 +19,12 @@ import { Config } from '../src/index.js'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const source = readFileSync(join(root, 'client/core.js'), 'utf8')
 
-const EXPORTS = '{ apply, inject, settingsOps, PACKAGE_NAME, SETTINGS_NS, TranslatorSettings, SettingsForm, SettingsSummary, TranslatorRoot, I18N, CONFIG_PATHS }'
+const EXPORTS = '{ apply, inject, settingsOps, PACKAGE_NAME, SETTINGS_NS, TranslatorSettings, SettingsForm, SettingsSummary, TranslatorRoot, I18N, CONFIG_PATHS, API_PROVIDER_IDS }'
 
 /** The section the Host resolves for this entry: schema defaults with no override. */
 const SAMPLE_VALUE = {
+  engine: 'api',
+  apiProvider: 'auto',
   primaryLanguage: 'zh-Hans',
   customModel: { provider: '', model: '' },
   reasoningEffort: 'low',
@@ -158,6 +160,8 @@ test('client: injects slots + locale + configForms and contributes both seats', 
 test('client: a save writes leaf paths, never the customModel container', () => {
   const core = loadCore(fakeDocument())
   const base = {
+    engine: 'model',
+    apiProvider: 'auto',
     primaryLanguage: 'zh-Hans',
     customModel: { provider: '', model: '' },
     reasoningEffort: 'low',
@@ -182,6 +186,8 @@ test('client: a save writes leaf paths, never the customModel container', () => 
 test('client: resetting a field clears it back to its layer', () => {
   const core = loadCore(fakeDocument())
   const base = {
+    engine: 'model',
+    apiProvider: 'auto',
     primaryLanguage: 'zh-Hans',
     customModel: { provider: '', model: '' },
     reasoningEffort: 'low',
@@ -203,6 +209,8 @@ test('client: resetting a field clears it back to its layer', () => {
 test('client: resetting the model clears both of its leaves', () => {
   const core = loadCore(fakeDocument())
   const base = {
+    engine: 'model',
+    apiProvider: 'auto',
     primaryLanguage: 'zh-Hans',
     customModel: { provider: '', model: '' },
     reasoningEffort: 'low',
@@ -222,6 +230,8 @@ test('client: resetting the model clears both of its leaves', () => {
 test('client: an unchanged field with a stale user entry is cleaned in the same write', () => {
   const core = loadCore(fakeDocument())
   const base = {
+    engine: 'model',
+    apiProvider: 'auto',
     primaryLanguage: 'zh-Hans',
     customModel: { provider: '', model: '' },
     reasoningEffort: 'low',
@@ -259,6 +269,16 @@ test('client: the fields the form writes are exactly the schema\'s volatile leav
   assert.equal(written.includes('customModel'), false, 'the container is not volatile')
 })
 
+/** The recorded options of the one select whose values match exactly. */
+function selectOptions(react, values) {
+  const wanted = values.join('|')
+  for (const element of react.seen) {
+    const options = element.props && element.props.options
+    if (Array.isArray(options) && options.map(o => o.value).join('|') === wanted) return options
+  }
+  return null
+}
+
 test('client: the page view renders localized labels through the function seat', () => {
   // The framework hands a registration that declares `locale` a `Translate`
   // FUNCTION, not a dictionary: reading `t.model` instead of `t('model')`
@@ -270,21 +290,169 @@ test('client: the page view renders localized labels through the function seat',
   assert.doesNotThrow(() => core.SettingsForm({ view: 'page', form, t: seat(core, 'en') }))
   const texts = renderedText(react)
   for (const label of [
-    'Primary language', 'Model', 'Reasoning effort', 'Max tokens', 'Timeout (ms)', 'Temperature',
-    'Save', 'Discard changes', "Leave both empty to use the session's default model",
+    'Engine', 'Primary language', 'Translation service', 'Timeout (ms)',
+    'Save', 'Discard changes',
+    'Public free endpoints — no key to enter. Selected text is sent to a third-party translation service.',
   ]) {
     assert.ok(texts.includes(label), `rendered label: ${label}`)
   }
 
-  // The summary view carries the same seat and no form chrome.
-  const summaryReact = makeReact()
-  const summaryCore = loadCore(fakeDocument(), summaryReact)
-  assert.doesNotThrow(() => summaryCore.SettingsSummary({ view: 'summary', form, t: seat(summaryCore, 'en') }))
-  assert.ok(renderedText(summaryReact).some(text => text.includes('Session default')))
+  // The two selects the api engine owns carry the localized labels as options.
+  const engineOptions = selectOptions(react, ['api', 'model'])
+  assert.deepEqual(engineOptions.map(o => o.label), ['Free API (recommended)', 'Model'])
+  const providerOptions = selectOptions(react, ['auto', 'tencent', 'bing', 'volcengine', 'mymemory'])
+  assert.deepEqual(providerOptions.map(o => o.label), [
+    'Automatic (recommended)', 'Tencent', 'Microsoft Bing', 'Volcengine', 'MyMemory',
+  ])
 
   // The dispatcher and the overlay render with the same seat without throwing.
-  assert.doesNotThrow(() => summaryCore.TranslatorSettings({ view: 'summary', form, t: seat(summaryCore, 'en') }))
-  assert.doesNotThrow(() => summaryCore.TranslatorRoot({ t: seat(summaryCore, 'en') }))
+  assert.doesNotThrow(() => core.TranslatorSettings({ view: 'summary', form, t: seat(core, 'en') }))
+  assert.doesNotThrow(() => core.TranslatorRoot({ t: seat(core, 'en') }))
   // A runtime that forwards no seat falls back to the built-in dictionary.
-  assert.doesNotThrow(() => summaryCore.TranslatorRoot({}))
+  assert.doesNotThrow(() => core.TranslatorRoot({}))
+})
+
+test('client: the api engine hides every model-only control', () => {
+  const react = makeReact()
+  const core = loadCore(fakeDocument(), react)
+  core.SettingsForm({ view: 'page', form: makeForm(JSON.parse(JSON.stringify(SAMPLE_VALUE))), t: seat(core, 'en') })
+  const texts = renderedText(react)
+
+  // None of these is read on the free-API path, so none of them may appear.
+  for (const label of ['Model', 'Reasoning effort', 'Max tokens', 'Temperature']) {
+    assert.equal(texts.includes(label), false, `api mode must not render: ${label}`)
+  }
+  assert.equal(texts.includes('Session default'), false)
+})
+
+test('client: the model engine renders every model-only control', () => {
+  const react = makeReact()
+  const core = loadCore(fakeDocument(), react)
+  const value = JSON.parse(JSON.stringify(SAMPLE_VALUE))
+  value.engine = 'model'
+  core.SettingsForm({ view: 'page', form: makeForm(value), t: seat(core, 'en') })
+  const texts = renderedText(react)
+
+  for (const label of [
+    'Model', 'Reasoning effort', 'Max tokens', 'Timeout (ms)', 'Temperature',
+    'Save', 'Discard changes', "Leave both empty to use the session's default model",
+  ]) {
+    assert.ok(texts.includes(label), `rendered label: ${label}`)
+  }
+  // The free-API-only control is gone in the other direction.
+  assert.equal(texts.includes('Translation service'), false)
+  assert.equal(selectOptions(react, ['auto', 'tencent', 'bing', 'volcengine', 'mymemory']), null)
+})
+
+test('client: switching the engine writes exactly one path', () => {
+  const core = loadCore(fakeDocument())
+  const base = { engine: 'api', apiProvider: 'auto', primaryLanguage: 'zh-Hans', customModel: { provider: '', model: '' }, reasoningEffort: 'low', timeoutMs: 30000, maxTokens: 1024, temperature: 0.3 }
+  const draft = JSON.parse(JSON.stringify(base))
+  draft.engine = 'model'
+  assert.deepEqual(core.settingsOps(draft, base, base, {}), [
+    { op: 'set', path: ['engine'], value: 'model' },
+  ])
+  // Choosing a specific provider is likewise one volatile leaf.
+  const draft2 = JSON.parse(JSON.stringify(base))
+  draft2.apiProvider = 'bing'
+  assert.deepEqual(core.settingsOps(draft2, base, base, {}), [
+    { op: 'set', path: ['apiProvider'], value: 'bing' },
+  ])
+})
+
+test('client: every provider the form offers is one the Host schema accepts', () => {
+  // The select's options and the schema's union are declared in two places.
+  // A provider added to one and not the other would be offered by the form and
+  // then refused on save, so the two lists are pinned to each other here.
+  const core = loadCore(fakeDocument())
+  assert.equal(core.API_PROVIDER_IDS[0], 'auto', 'Automatic is offered first')
+  for (const id of core.API_PROVIDER_IDS) {
+    assert.doesNotThrow(() => Config({ apiProvider: id }), `the Host accepts apiProvider=${id}`)
+  }
+  const defined = Object.keys(core.I18N.en).filter(key => key.startsWith('provider'))
+  assert.deepEqual(
+    defined.sort(),
+    core.API_PROVIDER_IDS.map(id => 'provider' + id.charAt(0).toUpperCase() + id.slice(1)).sort(),
+    'every offered provider has a localized label',
+  )
+})
+
+/** The data-attribute names of the footer's rendered children, in DOM order. */
+function footerMarks(react) {
+  const footer = react.seen.find(el => el.props && el.props['data-dsh-translator-settings-footer'] !== undefined)
+  assert.ok(footer, 'the settings footer rendered')
+  return footer.children.map((child) => {
+    if (child === null || typeof child !== 'object' || !child.props) return null
+    if (child.props['data-dsh-translator-settings-discard'] !== undefined) return 'discard'
+    if (child.props['data-dsh-translator-settings-save'] !== undefined) return 'save'
+    if (child.props['data-dsh-translator-settings-status'] !== undefined) return 'status'
+    return null
+  }).filter(Boolean)
+}
+
+test('client: the footer leads with the actions and trails the status', () => {
+  // The actions sit on the left, so they must come first in DOM order too:
+  // visual order and tab order have to agree.
+  const react = makeReact()
+  const core = loadCore(fakeDocument(), react)
+  core.SettingsForm({ view: 'page', form: makeForm(), t: seat(core, 'en') })
+  assert.deepEqual(footerMarks(react), ['discard', 'save'])
+
+  // When there is something to report it belongs after the buttons, on the
+  // right. A read-only connection is the one status a fresh form shows.
+  const roReact = makeReact()
+  const roCore = loadCore(fakeDocument(), roReact)
+  const roForm = makeForm()
+  roForm.state.writable = false
+  roCore.SettingsForm({ view: 'page', form: roForm, t: seat(roCore, 'en') })
+  assert.deepEqual(footerMarks(roReact), ['discard', 'save', 'status'])
+})
+
+test('client: a Host that predates the engine field falls back to the model form', () => {
+  // A `link:` install reads the Host half at instance startup. Updating the
+  // bundle on disk and refreshing only the page leaves a new client talking to
+  // an old schema, whose resolved section carries no `engine`. The form must
+  // then show what that Host can actually store, not two blank selects whose
+  // writes would be refused.
+  const react = makeReact()
+  const core = loadCore(fakeDocument(), react)
+  const value = JSON.parse(JSON.stringify(SAMPLE_VALUE))
+  delete value.engine
+  delete value.apiProvider
+  core.SettingsForm({ view: 'page', form: makeForm(value), t: seat(core, 'en') })
+  const texts = renderedText(react)
+
+  assert.equal(selectOptions(react, ['api', 'model']), null, 'no engine select')
+  assert.equal(selectOptions(react, ['auto', 'tencent', 'bing', 'volcengine', 'mymemory']), null, 'no service select')
+  assert.equal(texts.includes('Engine'), false)
+  assert.equal(texts.includes('Translation service'), false)
+  // The engine this Host does understand is shown, plus the reason.
+  for (const label of ['Model', 'Reasoning effort', 'Max tokens', 'Temperature']) {
+    assert.ok(texts.includes(label), `rendered label: ${label}`)
+  }
+  assert.ok(texts.some(text => text.includes('restart it')), 'the reason is stated')
+
+  // The summary must not advertise an engine the Host cannot run either.
+  const summary = makeReact()
+  const summaryCore = loadCore(fakeDocument(), summary)
+  summaryCore.SettingsSummary({ view: 'summary', form: makeForm(value), t: seat(summaryCore, 'en') })
+  const summaryText = renderedText(summary).join(' ')
+  assert.equal(summaryText.includes('Free API'), false)
+  assert.ok(summaryText.includes('Session default'))
+})
+
+test('client: the summary names the engine that will actually run', () => {
+  const api = makeReact()
+  const apiCore = loadCore(fakeDocument(), api)
+  apiCore.SettingsSummary({ view: 'summary', form: makeForm(), t: seat(apiCore, 'en') })
+  assert.ok(renderedText(api).some(text => text.includes('Free API (recommended)')))
+  assert.ok(renderedText(api).some(text => text.includes('Automatic (recommended)')))
+
+  const model = makeReact()
+  const modelCore = loadCore(fakeDocument(), model)
+  const value = JSON.parse(JSON.stringify(SAMPLE_VALUE))
+  value.engine = 'model'
+  modelCore.SettingsSummary({ view: 'summary', form: makeForm(value), t: seat(modelCore, 'en') })
+  // With no model chosen the model engine falls back to the session default.
+  assert.ok(renderedText(model).some(text => text.includes('Session default')))
 })

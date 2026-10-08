@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Word-selection translation",
-    "description": "Select text anywhere, click the floating translate button, and translate it with the model this harness already has configured."
+    "description": "Select text anywhere and click the floating button to translate it. It uses free public translation endpoints by default — no key needed — or the model this harness already has configured."
   }
 }

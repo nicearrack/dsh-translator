@@ -44,6 +44,11 @@ const I18N = {
     tooltip: '划词翻译', translating: '翻译中…', truncated: '（译文可能被截断）',
     retry: '重试', pin: '固定', unpin: '取消固定', close: '关闭',
     copied: '已复制', copiedSource: '已复制原文',
+    engine: '翻译引擎', engineApi: '免费 API（推荐）', engineModel: '大模型',
+    apiProvider: '翻译服务', apiHint: '公共免费接口，无需填写 Key。划选的文本会发送到第三方翻译服务。',
+    hostStale: '当前 DSH 实例尚未加载新版本，重启实例后才能使用「免费 API」引擎；下面暂时按「大模型」引擎显示。',
+    providerAuto: '自动（推荐）', providerTencent: '腾讯交互翻译', providerBing: '微软 Bing',
+    providerVolcengine: '火山翻译', providerMymemory: 'MyMemory',
     primaryLanguage: '主语言', model: '模型', followSession: '跟随会话默认',
     modelHint: '两项都留空时使用当前会话的默认模型',
     reasoningLevel: '推理等级',
@@ -56,6 +61,7 @@ const I18N = {
     errorTranslatedEmpty: '模型未返回译文',
     errorTimeout: '翻译超时',
     errorModelFailed: '模型调用失败',
+    errorApiFailed: '免费翻译接口暂时不可用，请稍后重试，或把引擎切换为「大模型」',
     errorFailed: '翻译失败',
     errorRequestFailed: '翻译请求失败',
   },
@@ -63,6 +69,11 @@ const I18N = {
     tooltip: 'Word-selection translation', translating: 'Translating…', truncated: '(may be truncated)',
     retry: 'Retry', pin: 'Pin', unpin: 'Unpin', close: 'Close',
     copied: 'Copied', copiedSource: 'Copied source',
+    engine: 'Engine', engineApi: 'Free API (recommended)', engineModel: 'Model',
+    apiProvider: 'Translation service', apiHint: 'Public free endpoints — no key to enter. Selected text is sent to a third-party translation service.',
+    hostStale: 'This DSH instance has not loaded the new version yet — restart it to get the Free API engine. The model engine is shown meanwhile.',
+    providerAuto: 'Automatic (recommended)', providerTencent: 'Tencent', providerBing: 'Microsoft Bing',
+    providerVolcengine: 'Volcengine', providerMymemory: 'MyMemory',
     primaryLanguage: 'Primary language', model: 'Model', followSession: 'Session default',
     modelHint: 'Leave both empty to use the session\'s default model',
     reasoningLevel: 'Reasoning effort',
@@ -75,6 +86,7 @@ const I18N = {
     errorTranslatedEmpty: 'The model returned no translation',
     errorTimeout: 'Translation timed out',
     errorModelFailed: 'Model call failed',
+    errorApiFailed: 'The free translation endpoints are unavailable — try again later, or switch the engine to Model',
     errorFailed: 'Translation failed',
     errorRequestFailed: 'Translation request failed',
   },
@@ -85,10 +97,20 @@ const ERROR_KEY = {
   'no-model': 'errorNoModel',
   'translated-empty': 'errorTranslatedEmpty',
   'timeout': 'errorTimeout',
+  'api-timeout': 'errorTimeout',
   'model-error': 'errorModelFailed',
+  'api-failed': 'errorApiFailed',
 }
 const LANG_NAMES = {
   'zh-Hans': '简体中文', 'zh-Hant': '繁體中文', 'ja-JP': '日本語', 'ko-KR': '한국어', 'ru-RU': 'Русский', 'en': 'English',
+}
+/** Keyless providers the API engine offers, in chain order, `auto` first. */
+const API_PROVIDER_IDS = ['auto', 'tencent', 'bing', 'volcengine', 'mymemory']
+/** Localized label of one provider id, falling back to the raw id. */
+function providerName(t, id) {
+  if (!id) return ''
+  const label = t('provider' + id.charAt(0).toUpperCase() + id.slice(1))
+  return label || id
 }
 function formatTokens(n) {
   if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
@@ -396,13 +418,13 @@ const TRANSLATOR_CSS = `
 [data-dsh-translator-settings-footer] {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 8px;
   padding-top: 12px;
   border-top: 1px solid var(--dsw-alias-border-l2);
 }
 [data-dsh-translator-settings-status] {
-  margin-right: auto;
+  margin-left: auto;
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
 }
@@ -835,7 +857,7 @@ function TranslatorRoot(props) {
       if (unmounted || id !== requestSeq) return
       const v = value && typeof value === 'object' ? value : {}
       if (typeof v.text === 'string') {
-        setCard(prev => prev ? { ...prev, status: 'done', result: { target: v.target, text: v.text, engine: v.engine, truncated: v.truncated === true, model: v.model, reasoningEffort: v.reasoningEffort, tokens: v.tokens } } : prev)
+        setCard(prev => prev ? { ...prev, status: 'done', result: { target: v.target, text: v.text, engine: v.engine, provider: v.provider, truncated: v.truncated === true, model: v.model, reasoningEffort: v.reasoningEffort, tokens: v.tokens } } : prev)
       } else {
         setCard(prev => prev ? { ...prev, status: 'error', error: errorText() } : prev)
       }
@@ -882,7 +904,14 @@ function TranslatorRoot(props) {
       bodyChildren.push(react.createElement('div', { key: 'ok' }, card.result.text))
     }
     const footChildren = []
-    if (card.result && card.result.engine === 'model') {
+    if (card.result && card.result.engine === 'api') {
+      // The free path has no model and no token count; naming the provider it
+      // actually used is the only honest metadata it can show.
+      const metaParts = []
+      if (card.result.target) metaParts.push('→ ' + langName(card.result.target))
+      if (card.result.provider) metaParts.push(providerName(t, card.result.provider))
+      if (metaParts.length) footChildren.push(react.createElement('span', { key: 'dir', 'data-dsh-translator-meta': '' }, metaParts.join(' · ')))
+    } else if (card.result && card.result.engine === 'model') {
       const metaParts = []
       if (card.result.target) metaParts.push('→ ' + langName(card.result.target))
       if (card.result.model) metaParts.push(card.result.model)
@@ -939,7 +968,7 @@ const PACKAGE_NAME = '@nicearrack/dsh-translator'
 const SETTINGS_NS = 'dsh-translator'
 
 /** Schema defaults, used only when the Host reports no composition base. */
-const FALLBACK_BASE = { primaryLanguage: 'zh-Hans', customModel: { provider: '', model: '' }, reasoningEffort: 'low', timeoutMs: 30000, maxTokens: 1024, temperature: 0.3 }
+const FALLBACK_BASE = { engine: 'api', apiProvider: 'auto', primaryLanguage: 'zh-Hans', customModel: { provider: '', model: '' }, reasoningEffort: 'low', timeoutMs: 30000, maxTokens: 1024, temperature: 0.3 }
 
 /**
  * Every editable field path. `customModel` is addressed through its children
@@ -949,6 +978,8 @@ const FALLBACK_BASE = { primaryLanguage: 'zh-Hans', customModel: { provider: '',
 const MODEL_PROVIDER = ['customModel', 'provider']
 const MODEL_NAME = ['customModel', 'model']
 const CONFIG_PATHS = [
+  ['engine'],
+  ['apiProvider'],
   ['primaryLanguage'],
   MODEL_PROVIDER,
   MODEL_NAME,
@@ -1053,10 +1084,21 @@ function SettingsSummary(props) {
   const state = snapshotOf(props)
   const value = state ? state.value : null
   if (value === null || value === undefined) return null
-  const pick = value.customModel && value.customModel.provider && value.customModel.model
-    ? value.customModel.provider + ' / ' + value.customModel.model
-    : t('followSession')
-  const parts = [langName(value.primaryLanguage), pick, value.reasoningEffort]
+  // Only claim the free API engine when the Host actually reports it: a Host
+  // that predates the field still runs the model engine, so the summary must
+  // not advertise a default it does not have.
+  const apiMode = value.engine === 'api'
+  const pick = apiMode
+    ? providerName(t, value.apiProvider || 'auto')
+    : (value.customModel && value.customModel.provider && value.customModel.model
+      ? value.customModel.provider + ' / ' + value.customModel.model
+      : t('followSession'))
+  const parts = [
+    apiMode ? t('engineApi') : t('engineModel'),
+    langName(value.primaryLanguage),
+    pick,
+    apiMode ? null : value.reasoningEffort,
+  ]
   return react.createElement('span', { 'data-dsh-translator-summary': '' }, parts.filter(Boolean).join(' · '))
 }
 
@@ -1171,37 +1213,88 @@ function SettingsForm(props) {
     type: 'number', value: atPath(draft, path), disabled, ...extra,
     onChange: (e) => setPath(path, Number(e.target.value)),
   })
+  const row = (key, ...children) => react.createElement('div', { key, 'data-dsh-translator-settings-row': '' }, ...children)
+
+  // The engine selects which half of the schema is live. `api` reads none of
+  // the model controls, so they are not rendered at all rather than disabled:
+  // a temperature box that changes nothing would be a lie about what the
+  // plugin does with it.
+  //
+  // The Host resolves this section from its OWN schema, so a field it does not
+  // report is a field it does not have — the bundle on disk was updated but the
+  // instance was not restarted. Rendering the control anyway would offer a
+  // choice whose write the Host refuses, and would show a blank select in the
+  // meantime. Fall back to the shape such a Host does understand (the model
+  // engine) and say why, instead of guessing at a default it cannot store.
+  const engineSupported = atPath(value, ['engine']) !== undefined
+  const apiMode = engineSupported && draft.engine !== 'model'
+  const languageField = field(t('primaryLanguage'), ['primaryLanguage'],
+    react.createElement(ConfigSelect, { value: draft.primaryLanguage, disabled, onChange: (v) => setPath(['primaryLanguage'], v), options: langCodes.map(c => ({ value: c, label: langName(c) })) }))
+
+  const engineBody = apiMode
+    ? [
+      react.createElement('div', { key: 'api-hint', 'data-dsh-translator-field-hint': '' }, t('apiHint')),
+      languageField,
+      field(t('apiProvider'), ['apiProvider'],
+        react.createElement(ConfigSelect, {
+          value: draft.apiProvider,
+          disabled,
+          onChange: (v) => setPath(['apiProvider'], v),
+          options: API_PROVIDER_IDS.map(id => ({ value: id, label: providerName(t, id) })),
+        })),
+      row('api-row',
+        field(t('timeout'), ['timeoutMs'], numberInput(['timeoutMs'], { min: 1000 }))),
+    ]
+    : [
+      languageField,
+      field(t('model'), MODEL_PROVIDER,
+        react.createElement(ConfigSelect, {
+          value: modelKey,
+          disabled,
+          onChange: (v) => {
+            const i = v.indexOf('/')
+            if (i > 0) { setPath(MODEL_PROVIDER, v.slice(0, i)); setPath(MODEL_NAME, v.slice(i + 1)) }
+          },
+          options: models.map(m => ({ value: m.provider + '/' + m.model, label: m.label })),
+          placeholder: modelKey || t('followSession'),
+        }), modelOverridden(), resetModel),
+      react.createElement('div', { key: 'model-hint', 'data-dsh-translator-field-hint': '' }, t('modelHint')),
+      row('model-row',
+        field(t('reasoningLevel'), ['reasoningEffort'],
+          react.createElement(ConfigSelect, { value: draft.reasoningEffort, disabled, onChange: (v) => setPath(['reasoningEffort'], v), options: [{ value: 'off', label: 'off' }, { value: 'low', label: 'low' }, { value: 'high', label: 'high' }, { value: 'max', label: 'max' }] })),
+        field(t('maxTokens'), ['maxTokens'], numberInput(['maxTokens'], { min: 1 }))),
+      row('advanced-row',
+        field(t('timeout'), ['timeoutMs'], numberInput(['timeoutMs'], { min: 1000 })),
+        field(t('temperature'), ['temperature'], numberInput(['temperature'], { step: 0.1, min: 0, max: 2 }))),
+    ]
+
+  // The engine select exists only when the Host has the field to store it in;
+  // otherwise the reader gets a one-line explanation instead of two selects
+  // that render blank and could never be saved.
+  const engineField = engineSupported
+    ? field(t('engine'), ['engine'],
+      react.createElement(ConfigSelect, {
+        value: draft.engine,
+        disabled,
+        onChange: (v) => setPath(['engine'], v),
+        options: [
+          { value: 'api', label: t('engineApi') || 'Free API' },
+          { value: 'model', label: t('engineModel') || 'Model' },
+        ],
+      }))
+    : react.createElement('div', { key: 'host-stale-hint', 'data-dsh-translator-field-hint': '' }, t('hostStale'))
 
   return react.createElement('div', { 'data-dsh-translator-settings': '' },
-    field(t('primaryLanguage'), ['primaryLanguage'],
-      react.createElement(ConfigSelect, { value: draft.primaryLanguage, disabled, onChange: (v) => setPath(['primaryLanguage'], v), options: langCodes.map(c => ({ value: c, label: langName(c) })) })),
-    field(t('model'), MODEL_PROVIDER,
-      react.createElement(ConfigSelect, {
-        value: modelKey,
-        disabled,
-        onChange: (v) => {
-          const i = v.indexOf('/')
-          if (i > 0) { setPath(MODEL_PROVIDER, v.slice(0, i)); setPath(MODEL_NAME, v.slice(i + 1)) }
-        },
-        options: models.map(m => ({ value: m.provider + '/' + m.model, label: m.label })),
-        placeholder: modelKey || t('followSession'),
-      }), modelOverridden(), resetModel),
-    react.createElement('div', { 'data-dsh-translator-field-hint': '' }, t('modelHint')),
-    react.createElement('div', { 'data-dsh-translator-settings-row': '' },
-      field(t('reasoningLevel'), ['reasoningEffort'],
-        react.createElement(ConfigSelect, { value: draft.reasoningEffort, disabled, onChange: (v) => setPath(['reasoningEffort'], v), options: [{ value: 'off', label: 'off' }, { value: 'low', label: 'low' }, { value: 'high', label: 'high' }, { value: 'max', label: 'max' }] })),
-      field(t('maxTokens'), ['maxTokens'], numberInput(['maxTokens'], { min: 1 })),
-    ),
-    react.createElement('div', { 'data-dsh-translator-settings-row': '' },
-      field(t('timeout'), ['timeoutMs'], numberInput(['timeoutMs'], { min: 1000 })),
-      field(t('temperature'), ['temperature'], numberInput(['temperature'], { step: 0.1, min: 0, max: 2 })),
-    ),
+    engineField,
+    ...engineBody,
     react.createElement('div', { 'data-dsh-translator-settings-footer': '' },
+      // The actions lead, in DOM order as well as on screen, so the tab order
+      // follows the eye: discard, save, then the status the save reports.
+      react.createElement('button', { 'data-dsh-translator-settings-discard': '', type: 'button', disabled: !dirty || saving, onClick: discard }, t('discard')),
+      react.createElement('button', { 'data-dsh-translator-settings-save': '', type: 'button', disabled: !dirty || saving, onClick: save }, saving ? t('saving') : t('save')),
       status
         ? react.createElement('span', { 'data-dsh-translator-settings-status': '' }, status)
         : (disabled ? react.createElement('span', { 'data-dsh-translator-settings-status': '' }, t('readOnly')) : null),
-      react.createElement('button', { 'data-dsh-translator-settings-discard': '', type: 'button', disabled: !dirty || saving, onClick: discard }, t('discard')),
-      react.createElement('button', { 'data-dsh-translator-settings-save': '', type: 'button', disabled: !dirty || saving, onClick: save }, saving ? t('saving') : t('save')),
     ),
   )
 }
