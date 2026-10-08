@@ -82,9 +82,10 @@ dsh plugin --profile web add /path/to/dsh-translator
 dsh plugin --profile web add github:nicearrack/dsh-translator
 ```
 
-> git 安装会运行包的 `prepare` 构建脚本。pnpm ≥ 10 首次安装被拒时，需要在
-> profile 的 `pnpm-workspace.yaml` 里加一次授权：
-> `allowBuilds: { "@nicearrack/dsh-translator": true }`。
+> git 安装**不需要任何构建步骤，也不需要 pnpm 的 `allowBuilds` 授权**。构建好的
+> Host / Client 两半已随仓库提交，检出即可用——pnpm 完全不需要执行脚本。（pnpm ≥ 10
+> 会拒绝 git 依赖的 `prepare`，除非 `allowBuilds` 里列出包含**解析后 URL 与 commit
+> 哈希**的完整键——所以才改成直接提交构建产物。）
 
 ## 更新
 

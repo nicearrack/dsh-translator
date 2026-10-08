@@ -1,7 +1,14 @@
-# dependencies / build output
+# dependencies
 node_modules/
-lib/
 dist/
+
+# NOTE: lib/ is deliberately NOT ignored. A git-hosted install is packed from
+# the repository and never runs a build script, so the built Host and Client
+# halves have to be committed. `npm run verify:build` (part of `npm run check`)
+# fails when they drift from src/ and client/.
+
+# local pnpm reproduction of a git install
+.pnpm-repro/
 
 # stability harness (playwright runtime, downloaded browsers, reports)
 stability/

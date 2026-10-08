@@ -82,9 +82,12 @@ From git:
 dsh plugin --profile web add github:nicearrack/dsh-translator
 ```
 
-> Git installs run the package's `prepare` build script. pnpm ≥ 10 requires
-> one-time authorization: add `allowBuilds: { "@nicearrack/dsh-translator": true }`
-> to the profile's `pnpm-workspace.yaml` if the first install is refused.
+> Git installs need **no build step and no pnpm `allowBuilds` entry**. The built
+> Host and Client halves are committed, so the package is usable exactly as it is
+> checked out — pnpm never has to run a script. (pnpm ≥ 10 refuses `prepare` on a
+> git dependency unless `allowBuilds` lists it under a key containing the
+> resolved URL *and commit hash*, which is why the build output is committed
+> instead.)
 
 ## Update
 

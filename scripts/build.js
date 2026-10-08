@@ -1,42 +1,25 @@
-// dsh-translator build script (self-contained, plain Node — runs as `prepare`
-// during git installs and before `npm publish`).
+// dsh-translator build script (plain Node — runs as `prepublishOnly` before an
+// npm publish, and by hand as `npm run build`).
 //
-// Produces:
+// Writes every artifact `build-artifacts.js` renders:
 //   lib/index.js          — packaged Host half (copy of src/index.js)
 //   lib/free-translate.js — the keyless public provider chain it imports
 //   lib/client.js         — client-modules bundle (core wrapped into
 //                           window.__ModuleLoader__.load({ id, factory }))
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+//
+// These files are COMMITTED. A git-hosted install packs the repository and
+// never runs a build script, so the package has to already contain its output.
+// `npm run verify:build` is what keeps them honest; run it before committing.
+import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildArtifacts } from './build-artifacts.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
+const artifacts = await buildArtifacts(root)
 
 await mkdir(join(root, 'lib'), { recursive: true })
-
-const index = await readFile(join(root, 'src/index.js'), 'utf8')
-await writeFile(join(root, 'lib/index.js'), index)
-
-// The Host half is more than one file: it imports the provider chain, so every
-// module under src/ ships beside it under the same relative name.
-const chain = await readFile(join(root, 'src/free-translate.js'), 'utf8')
-await writeFile(join(root, 'lib/free-translate.js'), chain)
-
-const core = await readFile(join(root, 'client/core.js'), 'utf8')
-const bundle = `window.__ModuleLoader__.load({
-	id: ${JSON.stringify(pkg.name)},
-	factory: (require) => {
-		var module = { exports: {} };
-		var exports = module.exports;
-		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-${core}
-		exports.apply = apply;
-		exports.inject = inject;
-		return module.exports;
-	}
-});
-`
-
-await writeFile(join(root, 'lib/client.js'), bundle)
-console.log(`built lib/index.js + lib/free-translate.js + lib/client.js (bundle id: ${pkg.name})`)
+for (const [relative, content] of artifacts) {
+	await writeFile(join(root, relative), content)
+}
+console.log('built ' + [...artifacts.keys()].join(' + '))
