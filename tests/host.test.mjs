@@ -1,44 +1,57 @@
-// dsh-translator host regression suite (frozen baseline BEFORE the remotes/
-// signal/locale refactors). Run: npm test  (node --test tests/)
+// dsh-translator host regression suite. Run: npm test  (node --test tests/)
 //
-// Mocks ctx/webServer/llm like scripts/host-sim.mjs and drives the packaged
-// Host half end to end over its HTTP route. When the business API migrates to
-// the official Typert Remote, this suite is updated to drive the remote
-// implementations — the asserted BEHAVIOR (config resolution, direction
-// detection, error codes, cancellation) is the frozen contract.
+// Drives the packaged Host half end to end over the exact Connection Fetch
+// routes it registers on the authenticated `/api` channel, mocking
+// ctx.llm/ctx.connection like scripts/host-sim.mjs does.
+//
+// The asserted BEHAVIOR (config resolution, live config edits, direction
+// detection, error codes, cancellation, timeout) is the frozen contract.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { apply as applyPlugin } from '../src/index.js'
+import { apply as applyPlugin, Config, inject as pluginInject, name as pluginName } from '../src/index.js'
 
-const DEFAULT_CONFIG = {
-  primaryLanguage: 'zh-Hans',
-  customModel: { provider: '', model: '' },
-  reasoningEffort: 'low',
-  timeoutMs: 30000,
-  maxTokens: 1024,
-  temperature: 0.3,
+/** The shared cross-copy volatile write symbol (cosmokit's protocol). */
+const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write')
+
+/** Current value behind volatile references, recursively. */
+function plain(value) {
+  if (value !== null && typeof value === 'object' && VOLATILE_WRITE in value) return plain(value.get())
+  if (Array.isArray(value)) return value.map(plain)
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, plain(child)]))
+  }
+  return value
 }
 
-/** Build a mock context + captured route like host-sim.mjs. */
-function makeCtx(llm = makeFakeLlm(), config = {}) {
-  let route = null
+/** Build a mock context + captured exact Fetch routes. */
+function makeCtx(llm = makeFakeLlm(), config = undefined) {
   const calls = []
+  const routes = new Map()
+  const injections = []
+  let llmTarget = llm
   const ctx = {
     get: (name) => name === 'agentDefaultModel' ? null : undefined,
     timeout: (cb, ms) => { const t = setTimeout(cb, ms); return () => clearTimeout(t) },
-    effect: (fn) => fn(),
-    webServer: { register: (r) => { route = r; return () => {} } },
-    inject: () => {}, // settings service not mounted: config source = row config
-  }
-  let llmTarget = llm
-  ctx.llm = {
-    listProviders: () => llmTarget.listProviders(),
-    listModels: (p) => llmTarget.listModels(p),
-    resolveModelInfo: (p, m) => llmTarget.resolveModelInfo ? llmTarget.resolveModelInfo(p, m) : Promise.reject(new Error('no info')),
-    stream: (o) => { calls.push(o); return llmTarget.stream(o) },
+    effect: (fn) => { const dispose = fn(); return typeof dispose === 'function' ? dispose : () => {} },
+    inject: (deps, callback) => {
+      injections.push(deps)
+      callback({
+        connection: {
+          fetch: {
+            register: (route) => { routes.set(route.path, route); return async () => { routes.delete(route.path) } },
+          },
+        },
+      })
+    },
+    llm: {
+      listProviders: () => llmTarget.listProviders(),
+      listModels: (p) => llmTarget.listModels(p),
+      resolveModelInfo: (p, m) => llmTarget.resolveModelInfo ? llmTarget.resolveModelInfo(p, m) : Promise.reject(new Error('no info')),
+      stream: (o) => { calls.push(o); return llmTarget.stream(o) },
+    },
   }
   applyPlugin(ctx, config)
-  return { ctx, getRoute: () => route, calls }
+  return { ctx, routes, calls, injections }
 }
 
 function makeFakeLlm() {
@@ -52,42 +65,58 @@ function makeFakeLlm() {
   }
 }
 
-/** Drive one route hit. */
-async function hit(route, method, payload) {
-  const body = Buffer.from(JSON.stringify(payload))
-  const req = { url: '/translator/api/' + method, [Symbol.asyncIterator]: async function* () { yield body } }
-  let out = null
-  const res = { writeHead: (code, h) => { out = { code, h } }, end: (b) => { out.body = JSON.parse(b) } }
-  await route.handler(req, res)
-  return out
+/** Drive one exact Fetch route with a JSON body. */
+async function hit(routes, path, payload) {
+  const route = routes.get(path)
+  assert.ok(route !== undefined, 'route ' + path + ' is registered')
+  const request = new Request('http://127.0.0.1:3080' + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const response = await route.fetch(request)
+  return { status: response.status, headers: response.headers, body: await response.json() }
 }
 
-test('Config schema: defaults filled, invalid values rejected', async () => {
-  const mod = await import('../src/index.js')
-  assert.equal(mod.name, 'dsh-translator')
-  assert.deepEqual(mod.inject.sort(), ['llm', 'timer', 'webServer'].sort())
-  const cfg = mod.Config({})
+const TRANSLATE = '/api/translator/translate'
+
+test('Config schema: defaults filled, invalid values rejected', () => {
+  assert.equal(pluginName, 'dsh-translator')
+  assert.deepEqual([...pluginInject].sort(), ['llm', 'timer'])
+  const cfg = plain(Config({}))
   assert.equal(cfg.primaryLanguage, 'zh-Hans')
   assert.equal(cfg.reasoningEffort, 'low')
   assert.equal(cfg.timeoutMs, 30000)
   assert.equal(cfg.maxTokens, 1024)
   assert.equal(cfg.temperature, 0.3)
   assert.deepEqual(cfg.customModel, { provider: '', model: '' })
-  assert.throws(() => mod.Config({ reasoningEffort: 'bogus' }))
-  assert.throws(() => mod.Config({ timeoutMs: 100 }))
+  assert.throws(() => Config({ reasoningEffort: 'bogus' }))
+  assert.throws(() => Config({ timeoutMs: 100 }))
 })
 
-test('apply registers the API prefix route', () => {
-  const { getRoute } = makeCtx()
-  const r = getRoute()
-  assert.equal(r.kind, 'prefix')
-  assert.equal(r.path, '/translator/api')
-  assert.equal(typeof r.handler, 'function')
+test('apply registers exact authenticated /api routes through ctx.connection', () => {
+  const { routes, injections } = makeCtx()
+  assert.deepEqual(injections, [['connection']])
+  assert.deepEqual([...routes.keys()].sort(), [
+    '/api/translator/default-model',
+    '/api/translator/list-models',
+    '/api/translator/translate',
+    '/api/translator/translate-cancel',
+  ].sort())
+  for (const route of routes.values()) {
+    assert.deepEqual(route.methods, ['POST'])
+    assert.equal(route.requestBody, 'buffered')
+    assert.equal(typeof route.fetch, 'function')
+  }
+  // The unauthenticated webserver prefix of the 0.2 line is gone.
+  assert.equal(routes.has('/translator/api'), false)
 })
 
 test('translate: success envelope + stream parameters', async () => {
-  const { getRoute, calls } = makeCtx()
-  const out = await hit(getRoute(), 'translate', { text: 'Hello world' })
+  const { routes, calls } = makeCtx()
+  const out = await hit(routes, TRANSLATE, { text: 'Hello world' })
+  assert.equal(out.status, 200)
+  assert.match(out.headers.get('content-type'), /application\/json/)
   assert.equal(out.body.ok, true)
   const v = out.body.value
   assert.equal(v.target, 'zh-Hans') // no CJK → translate into primary language
@@ -106,21 +135,21 @@ test('translate: success envelope + stream parameters', async () => {
 })
 
 test('translate: direction detection (CJK text → en)', async () => {
-  const { getRoute } = makeCtx()
-  const out = await hit(getRoute(), 'translate', { text: '你好世界' })
+  const { routes } = makeCtx()
+  const out = await hit(routes, TRANSLATE, { text: '你好世界' })
   assert.equal(out.body.value.target, 'en')
 })
 
 test('translate: empty text rejected', async () => {
-  const { getRoute } = makeCtx()
-  const out = await hit(getRoute(), 'translate', { text: '' })
+  const { routes } = makeCtx()
+  const out = await hit(routes, TRANSLATE, { text: '' })
   assert.equal(out.body.ok, false)
   assert.equal(out.body.error.code, 'empty')
 })
 
 test('translate: long text capped at 2000 chars', async () => {
-  const { getRoute, calls } = makeCtx()
-  await hit(getRoute(), 'translate', { text: 'x'.repeat(3000) })
+  const { routes, calls } = makeCtx()
+  await hit(routes, TRANSLATE, { text: 'x'.repeat(3000) })
   assert.equal(calls[0].messages[0].content[0].text.length, 2000)
 })
 
@@ -129,8 +158,8 @@ test('translate: provider failure → model-error code + detail', async () => {
   failing.stream = () => (async function* () {
     yield { type: 'finish', reason: { kind: 'error', failure: { message: 'provider exploded', code: 'X' } } }
   })()
-  const { getRoute } = makeCtx(failing)
-  const out = await hit(getRoute(), 'translate', { text: 'hello' })
+  const { routes } = makeCtx(failing)
+  const out = await hit(routes, TRANSLATE, { text: 'hello' })
   assert.equal(out.body.ok, false)
   assert.equal(out.body.error.code, 'model-error')
   assert.equal(out.body.error.detail, 'provider exploded')
@@ -139,8 +168,8 @@ test('translate: provider failure → model-error code + detail', async () => {
 test('translate: reasoning effort stripped when the model cannot support it', async () => {
   const llm = makeFakeLlm()
   llm.resolveModelInfo = async () => ({ reasoning: { efforts: [{ id: 'low' }] } })
-  const c = makeCtx(llm, { reasoningEffort: 'max' })
-  const out = await hit(c.getRoute(), 'translate', { text: 'hello' })
+  const c = makeCtx(llm, Config({ reasoningEffort: 'max' }))
+  const out = await hit(c.routes, TRANSLATE, { text: 'hello' })
   assert.equal(out.body.ok, true)
   assert.equal(c.calls[0].reasoningEffort, undefined)
 })
@@ -152,19 +181,22 @@ test('translate-cancel: seq-matched cancel on an in-flight run', async () => {
     await new Promise(res => setTimeout(res, 300))
     yield { type: 'finish', reason: { kind: 'stop' } }
   })()
-  const { getRoute } = makeCtx(slow)
-  const req = { url: '/translator/api/translate', [Symbol.asyncIterator]: async function* () { yield Buffer.from(JSON.stringify({ text: 'hello', seq: 1 })) } }
-  const pending = getRoute().handler(req, { writeHead: () => {}, end: () => {} })
+  const { routes } = makeCtx(slow)
+  const pending = routes.get(TRANSLATE).fetch(new Request('http://127.0.0.1:3080' + TRANSLATE, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'hello' }),
+  }))
   await new Promise(res => setTimeout(res, 50))
-  const cancelOut = await hit(getRoute(), 'translate-cancel', { seq: 1 })
+  const cancelOut = await hit(routes, '/api/translator/translate-cancel', { seq: 1 })
   assert.equal(cancelOut.body.ok, true)
   assert.equal(cancelOut.body.value, null)
   await pending
 })
 
 test('list-models enumerates provider/model pairs', async () => {
-  const { getRoute } = makeCtx()
-  const out = await hit(getRoute(), 'list-models', {})
+  const { routes } = makeCtx()
+  const out = await hit(routes, '/api/translator/list-models', {})
   assert.equal(out.body.ok, true)
   assert.ok(Array.isArray(out.body.value))
   assert.equal(out.body.value[0].provider, 'test-provider')
@@ -172,34 +204,37 @@ test('list-models enumerates provider/model pairs', async () => {
 })
 
 test('default-model falls back to first provider/model', async () => {
-  const { getRoute } = makeCtx()
-  const out = await hit(getRoute(), 'default-model', {})
+  const { routes } = makeCtx()
+  const out = await hit(routes, '/api/translator/default-model', {})
   assert.equal(out.body.ok, true)
   assert.equal(out.body.value.provider, 'test-provider')
 })
 
-test('row config (cordis.yml) is applied when settings is absent', async () => {
-  const { getRoute, calls } = makeCtx(undefined, { maxTokens: 512, reasoningEffort: 'high', timeoutMs: 45000 })
-  await hit(getRoute(), 'translate', { text: 'hello' })
+test('row config (cordis.yml) is applied', async () => {
+  const { routes, calls } = makeCtx(undefined, Config({ maxTokens: 512, reasoningEffort: 'high', timeoutMs: 45000 }))
+  await hit(routes, TRANSLATE, { text: 'hello' })
   assert.equal(calls[0].maxTokens, 512)
   assert.equal(calls[0].reasoningEffort, 'high')
 })
 
-test('config endpoints are gone (custom config API removed)', async () => {
-  const { getRoute } = makeCtx()
-  const out = await hit(getRoute(), 'get-config', {})
-  assert.equal(out.body.ok, false)
-  assert.equal(out.body.error.code, 'method-not-found')
+test('a live settings edit updates an in-flight-less plugin without a reload', async () => {
+  const config = Config({ maxTokens: 512 })
+  const { routes, calls } = makeCtx(undefined, config)
+  await hit(routes, TRANSLATE, { text: 'hello' })
+  assert.equal(calls[0].maxTokens, 512)
+  // What the loader does on a settings write: update the reference in place.
+  config.maxTokens[VOLATILE_WRITE](2048)
+  await hit(routes, TRANSLATE, { text: 'hello again' })
+  assert.equal(calls[1].maxTokens, 2048)
 })
 
-test('unknown method → method-not-found', async () => {
-  const { getRoute } = makeCtx()
-  const out = await hit(getRoute(), 'bogus', {})
-  assert.equal(out.body.ok, false)
-  assert.equal(out.body.error.code, 'method-not-found')
+test('an unregistered method has no route (404 from the shared channel)', () => {
+  const { routes } = makeCtx()
+  assert.equal(routes.has('/api/translator/get-config'), false)
+  assert.equal(routes.has('/api/translator/bogus'), false)
 })
 
-test('stalled stream + timeout: the abort signal settles the handler (frozen defect fixed)', async () => {
+test('stalled stream + timeout: the abort signal settles the handler', async () => {
   // A provider that never yields chunks and never fails on its own: without
   // the AbortSignal ride-along the for-await would block forever past the
   // timeout. The fake generator rejects on `signal` abort, exactly like a
@@ -214,9 +249,9 @@ test('stalled stream + timeout: the abort signal settles the handler (frozen def
     yield { type: 'text-delta', index: 0, text: 'unreachable' }
     yield { type: 'finish', reason: { kind: 'stop' } }
   })()
-  const { getRoute } = makeCtx(stalled, { timeoutMs: 1200 })
+  const { routes } = makeCtx(stalled, Config({ timeoutMs: 1200 }))
   const started = Date.now()
-  const out = await hit(getRoute(), 'translate', { text: 'hello' })
+  const out = await hit(routes, TRANSLATE, { text: 'hello' })
   assert.equal(out.body.ok, false)
   assert.equal(out.body.error.code, 'timeout')
   assert.ok(Date.now() - started < 4000, 'handler must settle shortly after the timeout')
@@ -233,35 +268,14 @@ test('cancel aborts the underlying stream instead of leaving it running', async 
     } catch { /* settle the iterator */ }
     yield { type: 'finish', reason: { kind: 'stop' } }
   })()
-  const { getRoute } = makeCtx(slow)
-  const req = { url: '/translator/api/translate', [Symbol.asyncIterator]: async function* () { yield Buffer.from(JSON.stringify({ text: 'hello', seq: 1 })) } }
-  const pending = getRoute().handler(req, { writeHead: () => {}, end: () => {} })
+  const { routes } = makeCtx(slow)
+  const pending = routes.get(TRANSLATE).fetch(new Request('http://127.0.0.1:3080' + TRANSLATE, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'hello' }),
+  }))
   await new Promise(res => setTimeout(res, 100))
-  await hit(getRoute(), 'translate-cancel', { seq: 1 })
+  await hit(routes, '/api/translator/translate-cancel', { seq: 1 })
   await pending
   assert.equal(aborted, true, 'the underlying stream must be aborted on cancel')
-})
-
-test('exposure guard: 0.0.0.0 binding logs a loud warning', async () => {
-  const warns = []
-  const orig = console.warn
-  console.warn = (...args) => warns.push(String(args[0]))
-  try {
-    const llm = makeFakeLlm()
-    let route = null
-    const calls = []
-    const ctx = {
-      get: (name) => name === 'agentDefaultModel' ? null : undefined,
-      timeout: (cb, ms) => { const t = setTimeout(cb, ms); return () => clearTimeout(t) },
-      effect: (fn) => fn(),
-      webServer: { host: '0.0.0.0', register: (r) => { route = r; return () => {} } },
-      inject: () => {},
-      llm,
-    }
-    applyPlugin(ctx, {})
-    assert.ok(warns.some(w => w.includes('0.0.0.0') && w.includes('/translator/api')), warns.join(' | '))
-    assert.equal(route.path, '/translator/api')
-  } finally {
-    console.warn = orig
-  }
 })

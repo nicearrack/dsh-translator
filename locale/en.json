@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Word-selection translation",
+    "description": "Select text anywhere, click the floating translate button, and translate it with the model this harness already has configured."
+  }
+}

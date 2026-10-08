@@ -1,124 +1,133 @@
 /**
- * dsh-translator — packaged Host half
+ * dsh-translator — packaged Host half.
  *
- * ESM Cordis plugin module, installed through the dsh bundle mechanism
- * (cordis.patch.yml row; see docs/user/develop/basic/publish). The browser
- * Client half calls this over HTTP for the business API only:
+ * A plain ESM Cordis plugin module installed through the dsh bundle mechanism
+ * (`package.json` `dsh.bundle.patch` → `cordis.patch.yml` row). The browser
+ * Client half reaches this half over the **authenticated** `/api` channel,
+ * one exact Connection Fetch route per operation:
  *
- *   POST /translator/api/translate         { text, seq? }
- *   POST /translator/api/translate-cancel  { seq }
- *   POST /translator/api/list-models       { }
- *   POST /translator/api/default-model     { }
+ *   POST /api/translator/translate         { text }
+ *   POST /api/translator/translate-cancel  { seq }
+ *   POST /api/translator/list-models       {}
+ *   POST /api/translator/default-model     {}
  *
- * The settings card is NOT served over this custom API: the card binds the
- * official `ctx.settingsScope` namespace (docs/reference/cookbook/
- * adding-a-settings-card), writing through the settings transport and
- * rendering the host-provided value/base/user layers.
+ * The routes are registered with `ctx.connection.fetch.register`, so the
+ * carrier's Host/Origin fence and browser authentication apply before the
+ * handler runs; no pattern here serves an unauthenticated prefix.
  *
- * Response envelope (mirrors the dsh-better-sidebar API convention):
+ * Response envelope (kept from the 0.2 line, it is locale-independent):
  *   { ok: true, value: <json> } | { ok: false, error: { code, message } }
  *
- * The translation core streams through ctx.llm with the user's default
- * model, a timeout, a single in-flight run, and seq-matched cancellation.
+ * Configuration is the exported `Config` alone. Every editable field is
+ * declared `.volatile()`, which is what makes the entry visible to the Host's
+ * schema-driven settings transport (`ctx.settings`) and lets an edit reach
+ * this half **live**, without unloading the plugin: the loader rewrites the
+ * profile patch and updates the same references in place, and every operation
+ * reads them through {@link readConfig}. There is no settings package import
+ * and no separate config source to keep in sync.
  *
- * Configuration follows docs/user/develop/basic/config: every tunable is a
- * plugin `Config` field with its default in the schema, so a deployment can
- * change any value from `cordis.yml` without touching code. The validated row
- * config arrives as `apply(ctx, config)` and is installed as the composition
- * `base` of the per-profile `settings` namespace (`dsh-translator`) through
- * the canonical `installSettingsSection` wiring: schema defaults ← row config
- * ← user document; without a settings provider the row config is the only
- * source and the plugin keeps working exactly as composed.
+ * The translation core streams through `ctx.llm` with the session's configured
+ * default model, a timeout, a single in-flight run, and seq-matched
+ * cancellation.
  */
 import z from '@deepseek-ai/schemastery'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { isVolatile } from '@deepseek-ai/cosmokit'
 
 export const name = 'dsh-translator'
 
-export const inject = ['webServer', 'llm', 'timer']
+/**
+ * Required services. `connection` is optional on purpose: a profile without a
+ * browser carrier (headless, sdk) still loads this plugin, and the routes are
+ * mounted by the `ctx.inject(['connection'], …)` block below only where the
+ * carrier exists.
+ */
+export const inject = ['llm', 'timer']
 
-const ROUTE_PREFIX = '/translator/api'
+/** Common prefix of the exact Fetch routes on the shared `/api` channel. */
+const API_BASE = '/api/translator'
 
-/** Browser pair key: the settings namespace the card binds on `ctx.settingsScope`. */
-const TRANSLATOR_NS = settingsNamespace('dsh-translator')
+const PRIMARY_LANGS = ['zh-Hans', 'zh-Hant', 'ja-JP', 'ko-KR', 'ru-RU']
+const REASONING_EFFORTS = ['off', 'low', 'high', 'max']
 
 /**
  * Plugin configuration (schemastery schema, Cordis Standard Schema).
  *
- * Defaults live here — the same schema validates the `config:` block of the
- * plugin row in `cordis.yml` and the user settings section stored under the
- * `dsh-translator` namespace, so the two layers can never drift apart.
+ * Defaults live here: the same schema validates the `config:` block of the
+ * plugin row in `cordis.yml` and the section the settings transport reads and
+ * writes, so the two layers can never drift apart. `.volatile()` marks the
+ * fields a settings page may edit without remounting the plugin; without it
+ * the entry carries no form at all.
  */
 export const Config = z.object({
-  primaryLanguage: z.union([z.const('zh-Hans'), z.const('zh-Hant'), z.const('ja-JP'), z.const('ko-KR'), z.const('ru-RU')]).default('zh-Hans'),
+  primaryLanguage: z.union([z.const('zh-Hans'), z.const('zh-Hant'), z.const('ja-JP'), z.const('ko-KR'), z.const('ru-RU')]).default('zh-Hans').volatile(),
   customModel: z.object({
-    provider: z.string().default(''),
-    model: z.string().default(''),
+    provider: z.string().default('').volatile(),
+    model: z.string().default('').volatile(),
   }).default({ provider: '', model: '' }),
-  reasoningEffort: z.union([z.const('off'), z.const('low'), z.const('high'), z.const('max')]).default('low'),
-  timeoutMs: z.number().min(1000).default(30000),
-  maxTokens: z.number().min(1).default(1024),
-  temperature: z.number().min(0).max(2).step(0.1).default(0.3),
+  reasoningEffort: z.union([z.const('off'), z.const('low'), z.const('high'), z.const('max')]).default('low').volatile(),
+  timeoutMs: z.number().min(1000).default(30000).volatile(),
+  maxTokens: z.number().min(1).default(1024).volatile(),
+  temperature: z.number().min(0).max(2).step(0.1).default(0.3).volatile(),
 })
 
-function regularize(c) {
+/** Current value behind a volatile config reference, or the plain value itself. */
+function plain(node) {
+  return isVolatile(node) ? node.get() : node
+}
+
+/** One finite number inside `[min, max]`, or the fallback. */
+function numberIn(value, min, max, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max
+    ? value
+    : fallback
+}
+
+/**
+ * Read the effective configuration for one operation.
+ *
+ * Called per request rather than captured at apply time: a live settings edit
+ * only updates the references, so a captured plain object would go stale.
+ * @param config - validated plugin Config (volatile references at the marked fields).
+ * @returns the plain values the translation core consumes.
+ */
+function readConfig(config) {
+  const root = config !== null && typeof config === 'object' ? config : Config({})
+  const primaryLanguage = plain(root.primaryLanguage)
+  const customModel = root.customModel !== null && typeof root.customModel === 'object' ? root.customModel : {}
   return {
-    primaryLanguage: PRIMARY_LANGS.includes(c.primaryLanguage) ? c.primaryLanguage : 'zh-Hans',
-    customModel: { provider: String((c.customModel && c.customModel.provider) || ''), model: String((c.customModel && c.customModel.model) || '') },
-    reasoningEffort: ['off', 'low', 'high', 'max'].includes(c.reasoningEffort) ? c.reasoningEffort : 'low',
-    timeoutMs: (typeof c.timeoutMs === 'number' && c.timeoutMs >= 1000) ? Math.floor(c.timeoutMs) : 30000,
-    maxTokens: (typeof c.maxTokens === 'number' && c.maxTokens >= 1) ? Math.floor(c.maxTokens) : 1024,
-    temperature: (typeof c.temperature === 'number' && c.temperature >= 0 && c.temperature <= 2) ? c.temperature : 0.3,
+    primaryLanguage: PRIMARY_LANGS.includes(primaryLanguage) ? primaryLanguage : 'zh-Hans',
+    customModel: {
+      provider: String(plain(customModel.provider) ?? ''),
+      model: String(plain(customModel.model) ?? ''),
+    },
+    reasoningEffort: REASONING_EFFORTS.includes(plain(root.reasoningEffort)) ? plain(root.reasoningEffort) : 'low',
+    timeoutMs: Math.floor(numberIn(plain(root.timeoutMs), 1000, Number.MAX_SAFE_INTEGER, 30000)),
+    maxTokens: Math.floor(numberIn(plain(root.maxTokens), 1, Number.MAX_SAFE_INTEGER, 1024)),
+    temperature: numberIn(plain(root.temperature), 0, 2, 0.3),
   }
 }
 
+/** JSON response for one exact Fetch route. */
+function json(body) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+  })
+}
+
 export function apply(ctx, config) {
-  // Required services are ready before apply runs (docs/user/develop/framework/service):
-  // injected services are read from ctx directly; only optional ones use ctx.get().
+  // Injected services are ready before apply runs; only optional ones use
+  // ctx.get()/ctx.inject().
   const llm = ctx.llm
   const defaultModel = ctx.get('agentDefaultModel')
-  // Row config (cordis.yml `config:`), validated and default-filled by Cordis
-  // against the exported schema. It is the deployment base layer; the settings
-  // user document wins over it.
-  const rowConfig = config && typeof config === 'object' ? regularize(config) : null
-  const schemaDefaults = Config({})
   let seq = 0
   let runSeq = 0
   let inflight = null
 
-  // Canonical optional-settings consumer wiring
-  // (docs/reference/cookbook/adding-a-settings-card): while a settings
-  // service exists the namespace resolves schema defaults ← row config ←
-  // user document; when the service goes away the config source falls back
-  // to the composition entry, so translation keeps working as composed.
-  let source = () => rowConfig ?? schemaDefaults
-  installSettingsSection(ctx, TRANSLATOR_NS, Config, rowConfig ?? schemaDefaults, {
-    setSource: (next) => { source = next },
-    onChange: () => {},
-  })
-
-  // Exposure guard (docs/reference/subsystems/web-server: the carrier has no
-  // TLS/auth/origin policy; only the app index is behind the browser-auth
-  // fence, so every named route — including this one — is unauthenticated).
-  // The official Typert Remote path is not available to out-of-repo plugins
-  // (marker tables are module-private), so the honest posture is a loud
-  // warning when the deployment deliberately listens on all interfaces.
-  if (ctx.webServer.host === '0.0.0.0') {
-    console.warn(
-      '[dsh-translator] bound to 0.0.0.0: the unauthenticated /translator/api '
-      + 'endpoints are reachable by anyone on the network; prefer 127.0.0.1 '
-      + '(or upstream gate the prefix) when the harness serves a LAN.',
-    )
-  }
-  // Fiber teardown aborts any in-flight provider stream (docs/user/develop/
-  // framework: registrations and open work belong to the fiber).
+  // Fiber teardown aborts any in-flight provider stream.
   ctx.effect(() => () => {
     if (inflight && inflight.abort) inflight.abort()
   }, 'dsh-translator: abort in-flight translation')
-
-  function currentConfig() {
-    return regularize(source())
-  }
 
   function resolveTarget(text, c) {
     const hasZh = /[\u4e00-\u9fff\u3400-\u4dbf]/.test(text)
@@ -146,7 +155,7 @@ export function apply(ctx, config) {
   }
 
   async function pickModel(c) {
-    if (c.customModel && c.customModel.provider && c.customModel.model) {
+    if (c.customModel.provider && c.customModel.model) {
       return { provider: c.customModel.provider, model: c.customModel.model }
     }
     try {
@@ -181,9 +190,8 @@ export function apply(ctx, config) {
     let tokens = null
     let eff = c.reasoningEffort
     // Real cancellation: the signal rides into llm.stream (GenerateOptions
-    // carries it), so an abort actually tears down the provider request
-    // instead of merely breaking out of the read loop while the fetch keeps
-    // running — a stalled stream could otherwise outlive its timeout forever.
+    // carries it), so an abort tears down the provider request instead of
+    // merely breaking out of the read loop.
     const controller = new AbortController()
     run.signal = controller.signal
     run.abort = () => controller.abort()
@@ -309,7 +317,7 @@ export function apply(ctx, config) {
     const run = { cancelled: false }
     inflight = run
     runSeq += 1
-    const c = currentConfig()
+    const c = readConfig(config)
     const target = resolveTarget(text, c)
     try {
       const picked = await pickModel(c)
@@ -319,8 +327,7 @@ export function apply(ctx, config) {
       return { ok: true, value: { target, text: result.text, engine: 'model', truncated: result.truncated === true, model: picked.model, reasoningEffort: c.reasoningEffort, tokens: result.tokens } }
     } catch (err) {
       // Error codes are the locale-independent contract; the browser card
-      // renders them through its own zh/en dictionary. `message` stays as a
-      // neutral fallback for non-localized clients.
+      // renders them through its own zh/en dictionary.
       const code = err && typeof err.code === 'string' ? err.code : 'translate-failed'
       const message = err instanceof Error ? err.message : String(err)
       const detail = err && typeof err.detail !== 'undefined' ? err.detail : undefined
@@ -357,46 +364,34 @@ export function apply(ctx, config) {
     return { ok: true, value: null }
   }
 
-  async function readJsonBody(req) {
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    const raw = Buffer.concat(chunks).toString('utf8')
-    if (!raw) return {}
+  async function payloadOf(request) {
     try {
-      return JSON.parse(raw)
+      const body = await request.json()
+      return body !== null && typeof body === 'object' ? body : {}
     } catch {
       return {}
     }
   }
 
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'prefix',
-    path: ROUTE_PREFIX,
-    handler: async (req, res) => {
-      const pathname = new URL(req.url ?? '/', 'http://x').pathname
-      const method = pathname.startsWith(ROUTE_PREFIX + '/')
-        ? pathname.slice(ROUTE_PREFIX.length + 1)
-        : ''
-      const payload = await readJsonBody(req)
-      let result
-      if (method === 'translate') {
-          result = await handleTranslate(payload)
-      } else if (method === 'translate-cancel') {
-        result = handleCancel(payload)
-      } else if (method === 'list-models') {
-        result = await handleListModels()
-      } else if (method === 'default-model') {
-        result = await handleDefaultModel()
-      } else {
-        result = { ok: false, error: { code: 'method-not-found', message: 'unknown method: ' + method } }
-      }
-      res.writeHead(200, {
-        'content-type': 'application/json; charset=utf-8',
-        'cache-control': 'no-cache',
+  /**
+   * Exact Fetch routes on the shared `/api` channel. `ctx.inject` keeps the
+   * plugin active in profiles without a carrier and unmounts every route with
+   * the child context, so an unload leaves nothing registered.
+   */
+  ctx.inject(['connection'], (child) => {
+    const routes = [
+      ['/translate', async (request) => json(await handleTranslate(await payloadOf(request)))],
+      ['/translate-cancel', async (request) => json(handleCancel(await payloadOf(request)))],
+      ['/list-models', async () => json(await handleListModels())],
+      ['/default-model', async () => json(await handleDefaultModel())],
+    ]
+    for (const [suffix, handler] of routes) {
+      child.connection.fetch.register({
+        path: API_BASE + suffix,
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: handler,
       })
-      res.end(JSON.stringify(result))
-    },
-  }), 'dsh-translator: api route')
+    }
+  })
 }
-
-const PRIMARY_LANGS = ['zh-Hans', 'zh-Hant', 'ja-JP', 'ko-KR', 'ru-RU']

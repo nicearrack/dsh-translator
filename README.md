@@ -7,6 +7,13 @@ Select any text — a conversation message, the sidebar, an input field — and 
 | English | [中文 README](README.zh.md) |
 |---|---|
 
+## Requirements
+
+DSH **0.2.1-alpha.1 or newer**. The plugin uses the current plugin contract: a
+volatile `Config` the Host renders itself, an exact Fetch route on the
+authenticated `/api` channel, and the Plugins page's own bundle-configuration
+seat. On older DSH releases, stay on `dsh-translator@0.2.1`.
+
 ## Usage
 
 Select text → click the floating **translate** button → the translation card appears. Drag the card by its header to move it, or pin it so it can't be dismissed by accident. Click the translation (or the source text, or an error message) to copy it. The card's footer shows the translation direction, the model, the reasoning effort, and the token consumption.
@@ -16,7 +23,7 @@ Select text → click the floating **translate** button → the translation card
 - Word-selection trigger anywhere in the app; floating button follows the selection, theme-aware (light/dark)
 - Automatic direction: text in your configured **primary language** → English; anything else → the primary language
 - Primary language configurable: 简体中文 / 繁體中文 / 日本語 / 한국어 / Русский (default 简体中文)
-- Config card in DSH settings (Settings → Plugins → 划词翻译): primary language, model (pick one, or leave it empty to follow the session default), reasoning effort (off/low/high/max), timeout, max tokens, temperature — each field shows "overridden / restore default", with staged edits and save/discard
+- Configuration on the Plugins page (sidebar **Plugins** → this bundle's card — the form is right there, no extra step): primary language, model (pick one, or leave it empty to follow the session default model), reasoning effort (off/low/high/max), timeout, max tokens, temperature — each field shows "overridden / restore default", with staged edits and save/discard. Changes apply to the next translation without restarting anything.
 - Translation card: source, direction badge, result, retry on failure; the footer shows model · reasoning effort · tokens
 - Click to copy: translation, source text, or error message — with a "已复制 / Copied" hint
 - Draggable card: drag it by its header; it stays where you put it
@@ -36,10 +43,6 @@ Click it → the translation card opens (English → Chinese):
 Chinese → English direction is automatic:
 
 ![Translation card ZH → EN](screenshots/zh-en.png)
-
-Configure it in DSH settings → Plugins → 划词翻译:
-
-![Plugin configuration card](screenshots/config.png)
 
 
 ## Install
@@ -73,12 +76,12 @@ dsh plugin --profile web add github:nicearrack/dsh-translator
 dsh plugin --profile web update @nicearrack/dsh-translator
 
 # or pin a specific version
-dsh plugin --profile web update @nicearrack/dsh-translator@0.2.1
+dsh plugin --profile web update @nicearrack/dsh-translator@0.3.0
 ```
 
 > **Fresh releases**: npm registry metadata can lag after a publish (a few
 > minutes, occasionally longer). If `@latest` still resolves to an older
-> version, pin the exact one — `@nicearrack/dsh-translator@0.2.1` — or check
+> version, pin the exact one — `@nicearrack/dsh-translator@0.3.0` — or check
 > `npm view @nicearrack/dsh-translator versions`.
 >
 > After updating, restart the DSH instance (`dsh --profile web`) so the new

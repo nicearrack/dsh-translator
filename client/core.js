@@ -5,27 +5,37 @@
 //
 //   window.__ModuleLoader__.load({ id: "<package-name>", factory: (require) => { ... this body ... } })
 //
-// The client runtime mounts the exports (apply + inject) as a browser plugin
-// on the client root context. 'slots' hosts the UI seats; 'settingsScope'
-// carries the official settings-namespace transport for the config card
-// (the snapshot lives in the value/base/user layers; writes ride the
-// settings transport with a revision fence — no custom config HTTP API).
+// Two seats are contributed through the official slot registry:
 //
-// The Host half is reached over HTTP only for the business API:
+//   shell.overlay       the frame-wide floating layer: the translate button
+//                       and the translation card.
+//   plugins.row.config  the Plugins page: this bundle's own row gains a
+//                       configure control and opens the settings form there,
+//                       keyed "<package name>#<row id>". A bundle's
+//                       configuration belongs in `plugins.bundle.config` or
+//                       `plugins.row.config`, not in a per-plugin settings
+//                       item (that slot is the official host-plane pages').
 //
-//   POST /translator/api/translate        { text, seq }
-//   POST /translator/api/translate-cancel { seq }
-//   POST /translator/api/list-models      { }
-//   POST /translator/api/default-model    { }
+// The settings form reads and writes through the Host-supplied `form` prop
+// (`view: 'page'`), which is the schema-driven configuration transport
+// (`ctx.configForms` behind the page) — the Client owns no settings channel of
+// its own, and the Host's Config schema is the only source of defaults.
+//
+// The Host half is reached over the authenticated `/api` channel for the
+// business API only:
+//
+//   POST api/translator/translate        { text }
+//   POST api/translator/translate-cancel { seq }
+//   POST api/translator/list-models      {}
+//   POST api/translator/default-model    {}
 //
 // UI strings come from the official dictionary registry (ctx.locale.register
-// 'dsh-translator' below) — both slot registrations declare `locale:` so the
-// `t` seat is used when the runtime delivers it, with a service-backed
-// fallback for runtimes that forward no props to list-slot occupants.
+// below); both slot registrations declare `locale:` so the framework's `t`
+// seat arrives on the component props and re-renders on locale switches.
 //
 // CSS is injected through a <style> element whose removal is registered with
 // the plugin fiber; selection guard, positioning, races, and cancellation
-// follow the same logic as the Host-side translation flow.
+// follow the Host-side translation flow.
 
 let react = require('react')
 
@@ -34,11 +44,12 @@ const I18N = {
     tooltip: '划词翻译', translating: '翻译中…', truncated: '（译文可能被截断）',
     retry: '重试', pin: '固定', unpin: '取消固定', close: '关闭',
     copied: '已复制', copiedSource: '已复制原文',
-    cardTitle: '划词翻译', cardDesc: '选中文字即译，用你配置的模型翻译',
-    primaryLanguage: '主语言', model: '模型',
+    primaryLanguage: '主语言', model: '模型', followSession: '跟随会话默认',
+    modelHint: '两项都留空时使用当前会话的默认模型',
     reasoningLevel: '推理等级',
     timeout: '超时（毫秒）', maxTokens: '最大输出 token', temperature: '温度',
     save: '保存', saving: '保存中…', discard: '放弃修改', saved: '已保存', saveFailed: '保存失败', overridden: '已覆盖', resetDefault: '恢复默认',
+    readOnly: '当前连接不接受写入',
     errorEmpty: '没有可翻译的文本',
     errorNoProvider: '未配置可用模型（无 LLM provider）',
     errorNoModel: 'provider 没有可用模型',
@@ -52,11 +63,12 @@ const I18N = {
     tooltip: 'Word-selection translation', translating: 'Translating…', truncated: '(may be truncated)',
     retry: 'Retry', pin: 'Pin', unpin: 'Unpin', close: 'Close',
     copied: 'Copied', copiedSource: 'Copied source',
-    cardTitle: 'Word-selection translation', cardDesc: 'Translate selected text with your configured model',
-    primaryLanguage: 'Primary language', model: 'Model',
+    primaryLanguage: 'Primary language', model: 'Model', followSession: 'Session default',
+    modelHint: 'Leave both empty to use the session\'s default model',
     reasoningLevel: 'Reasoning effort',
     timeout: 'Timeout (ms)', maxTokens: 'Max tokens', temperature: 'Temperature',
     save: 'Save', saving: 'Saving…', discard: 'Discard changes', saved: 'Saved', saveFailed: 'Save failed', overridden: 'Overridden', resetDefault: 'Reset to default',
+    readOnly: 'This connection does not accept writes',
     errorEmpty: 'Nothing to translate',
     errorNoProvider: 'No configured model (no LLM provider)',
     errorNoModel: 'Provider has no available model',
@@ -75,36 +87,15 @@ const ERROR_KEY = {
   'timeout': 'errorTimeout',
   'model-error': 'errorModelFailed',
 }
-// Language OPTIONS keep their self-described names (endonyms), never
-// translated with the UI locale — same convention as the DSH locale picker.
 const LANG_NAMES = {
-  'zh-Hans': '简体中文',
-  'zh-Hant': '繁體中文',
-  'ja-JP': '日本語',
-  'ko-KR': '한국어',
-  'ru-RU': 'Русский',
-  en: 'English',
+  'zh-Hans': '简体中文', 'zh-Hant': '繁體中文', 'ja-JP': '日本語', 'ko-KR': '한국어', 'ru-RU': 'Русский', 'en': 'English',
 }
 function formatTokens(n) {
-  const scaled = (v) => v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10)
-  if (n < 1000) return String(n)
-  if (n < 1000000) return scaled(n / 1000) + 'K'
-  return scaled(n / 1000000) + 'M'
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+  return String(n)
 }
-// Language OPTIONS keep their self-described names (endonyms) — module-level,
-// never locale-dependent. UI strings otherwise come from the official locale
-// seat `t` (registered below and injected by the slot framework).
 function langName(code) {
   return LANG_NAMES[code] || code
-}
-
-// UI strings come from the official dictionary registry (ctx.locale), with
-// the slot-framework `t` seat preferred when the runtime delivers it — this
-// overlay's locale option is declared, but this harness version forwards no
-// props to list-slot occupants, so a service-backed fallback supplies `t`.
-const LocaleCtx = react.createContext({ t: I18N.zh })
-function useI18n() {
-  return react.useContext(LocaleCtx)
 }
 
 const TRANSLATOR_CSS = `
@@ -204,6 +195,35 @@ const TRANSLATOR_CSS = `
   -webkit-user-select: none;
   cursor: pointer;
 }
+[data-dsh-translator-error] {
+  color: var(--dsw-alias-state-error-primary);
+}
+[data-dsh-translator-foot] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+[data-dsh-translator-meta] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-dsh-translator-foot] [data-dsh-translator-act] {
+  appearance: none;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
 [data-dsh-translator-copied] {
   position: absolute;
   right: 12px;
@@ -218,120 +238,70 @@ const TRANSLATOR_CSS = `
   pointer-events: none;
   opacity: 0.95;
 }
-[data-dsh-translator-foot] {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px 10px;
-  border-top: 1px solid var(--dsw-alias-border-l1);
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--dsw-alias-label-secondary);
-}
-[data-dsh-translator-meta] {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--dsw-alias-label-tertiary);
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-[data-dsh-translator-act] {
-  margin: 0;
-  padding: 2px 8px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.4;
-  cursor: pointer;
-  pointer-events: auto;
-}
-[data-dsh-translator-act]:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
-}
-[data-dsh-translator-close] {
-  margin-left: auto;
-}
-[data-dsh-translator-error] {
-  color: var(--dsw-alias-state-error-primary);
-}
 [data-dsh-translator-settings] {
   display: flex;
   flex-direction: column;
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-  line-height: 1.4;
+  gap: 12px;
+}
+[data-dsh-translator-settings-row] {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
 }
 [data-dsh-translator-field] {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 12px 0;
-}
-[data-dsh-translator-settings] > [data-dsh-translator-field] + [data-dsh-translator-field] {
-  border-top: 1px solid var(--dsw-alias-border-l2);
-}
-[data-dsh-translator-field-row] {
-  display: flex;
-  gap: 12px;
-  padding: 12px 0;
-  border-top: 1px solid var(--dsw-alias-border-l2);
-}
-[data-dsh-translator-field-row] [data-dsh-translator-field] {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
-  padding: 0;
 }
 [data-dsh-translator-field-head] {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  min-height: 20px;
 }
 [data-dsh-translator-field-label] {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.5;
   color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 1.5;
 }
 [data-dsh-translator-field-badges] {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  margin-left: auto;
 }
 [data-dsh-translator-badge] {
-  border-radius: 999px;
-  padding: 1px 8px;
-  font-size: 11px;
-  line-height: 17px;
-  font-weight: 500;
-  white-space: nowrap;
-  background: var(--dsw-alias-bg-module-platform);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 1.5;
 }
 [data-dsh-translator-reset] {
+  appearance: none;
+  padding: 0;
   border: none;
   background: none;
-  padding: 0;
-  font: inherit;
-  font-size: 12px;
+  color: var(--dsw-alias-brand-primary);
+  font-family: inherit;
+  font-size: 11px;
   line-height: 1.5;
-  color: var(--dsw-alias-label-secondary);
   cursor: pointer;
 }
-[data-dsh-translator-reset]:hover:not(:disabled) {
-  color: var(--dsw-alias-label-primary);
+[data-dsh-translator-reset]:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+[data-dsh-translator-field-hint] {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.4;
 }
 [data-dsh-translator-select] {
   position: relative;
-  display: block;
 }
 [data-dsh-translator-select-trigger] {
   display: flex;
@@ -339,7 +309,8 @@ const TRANSLATOR_CSS = `
   gap: 8px;
   width: 100%;
   height: 34px;
-  padding: 0 12px;
+  box-sizing: border-box;
+  padding: 0 10px;
   background: var(--dsw-alias-bg-layer-3);
   color: var(--dsw-alias-label-primary);
   border: 1px solid var(--dsw-alias-border-l2);
@@ -350,41 +321,38 @@ const TRANSLATOR_CSS = `
   text-align: left;
   cursor: pointer;
 }
-[data-dsh-translator-select-trigger]:hover {
-  border-color: var(--dsw-alias-label-dimmed);
-}
 [data-dsh-translator-select-trigger]:focus-visible {
   outline: none;
   border-color: var(--dsw-alias-brand-primary);
 }
+[data-dsh-translator-select-trigger]:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 [data-dsh-translator-select-label] {
   flex: 1;
   min-width: 0;
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 [data-dsh-translator-select-arrow] {
-  flex: none;
-  display: inline-flex;
+  flex: 0 0 auto;
   color: var(--dsw-alias-label-tertiary);
 }
 [data-dsh-translator-select-menu] {
   position: absolute;
-  top: calc(100% + 4px);
+  z-index: 10;
   left: 0;
   right: 0;
-  z-index: 100;
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  top: calc(100% + 4px);
   max-height: 260px;
   overflow-y: auto;
-  border: 1px solid var(--dsw-alias-border-inverted);
-  border-radius: 12px;
-  background: var(--dsw-alias-bg-layer-2);
-  box-shadow: var(--dsw-shadow-lv3);
+  padding: 4px;
+  background: var(--dsw-alias-bg-overlay);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
 }
 [data-dsh-translator-select-option] {
   display: flex;
@@ -422,106 +390,23 @@ const TRANSLATOR_CSS = `
   outline: none;
   border-color: var(--dsw-alias-brand-primary);
 }
-[data-dsh-translator-settings-title] {
-  font-weight: 600;
-  font-size: 13px;
+[data-dsh-translator-settings] input:disabled {
+  opacity: 0.5;
 }
-[data-dsh-translator-settings-row] {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 4px;
-}
-[data-dsh-translator-settings-save] {
-  padding: 4px 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-}
-[data-dsh-translator-settings-save]:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
-}
-[data-dsh-translator-settings-status] {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-}
-[data-dsh-translator-plugin-card] {
-  list-style: none;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
-  background: var(--dsw-alias-bg-layer-3);
-  transition: border-color 160ms ease, background 160ms ease;
-}
-[data-dsh-translator-plugin-card]:hover {
-  border-color: var(--dsw-alias-label-dimmed);
-}
-[data-dsh-translator-plugin-card][data-open="1"] {
-  background: var(--dsw-alias-bg-layer-2);
-  border-color: var(--dsw-alias-label-dimmed);
-}
-[data-dsh-translator-card-header] {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 14px 16px;
-  border: none;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  font-family: inherit;
-  font-size: 15px;
-  line-height: 1.4;
-  text-align: left;
-  cursor: pointer;
-  border-radius: 12px;
-}
-[data-dsh-translator-card-header]:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: -2px;
-}
-[data-dsh-translator-card-headtext] {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
-  min-width: 0;
-}
-[data-dsh-translator-card-name] {
-  font-weight: 600;
-  font-size: 15px;
-  line-height: 1.4;
-  color: var(--dsw-alias-label-primary);
-}
-[data-dsh-translator-card-desc] {
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 13px;
-  line-height: 1.5;
-}
-[data-dsh-translator-card-chevron] {
-  flex: 0 0 auto;
-  color: var(--dsw-alias-label-tertiary);
-  transition: transform 160ms ease;
-}
-[data-dsh-translator-card-chevron="open"] {
-  transform: rotate(180deg);
-}
-[data-dsh-translator-card-body] {
-  border-top: 1px solid var(--dsw-alias-border-l2);
-  margin: 0 16px;
-  padding-bottom: 10px;
-}
-[data-dsh-translator-card-footer] {
+[data-dsh-translator-settings-footer] {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  padding: 12px 0 4px;
+  padding-top: 12px;
   border-top: 1px solid var(--dsw-alias-border-l2);
 }
-[data-dsh-translator-card-discard] {
+[data-dsh-translator-settings-status] {
+  margin-right: auto;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+[data-dsh-translator-settings-discard] {
   appearance: none;
   padding: 5px 14px;
   border: 1px solid var(--dsw-alias-border-l2);
@@ -533,15 +418,11 @@ const TRANSLATOR_CSS = `
   line-height: 1.5;
   cursor: pointer;
 }
-[data-dsh-translator-card-discard]:hover:not(:disabled) {
+[data-dsh-translator-settings-discard]:hover:not(:disabled) {
   color: var(--dsw-alias-label-primary);
   border-color: var(--dsw-alias-label-dimmed);
 }
-[data-dsh-translator-card-discard]:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-[data-dsh-translator-card-save] {
+[data-dsh-translator-settings-save] {
   appearance: none;
   padding: 5px 14px;
   border: 1px solid transparent;
@@ -553,15 +434,16 @@ const TRANSLATOR_CSS = `
   line-height: 1.5;
   cursor: pointer;
 }
-[data-dsh-translator-card-save]:hover:not(:disabled) {
+[data-dsh-translator-settings-save]:hover:not(:disabled) {
   opacity: 0.92;
 }
-[data-dsh-translator-card-save]:disabled {
+[data-dsh-translator-settings-discard]:disabled,
+[data-dsh-translator-settings-save]:disabled {
   opacity: 0.4;
   cursor: default;
 }
-[data-dsh-translator-card-discard]:focus-visible,
-[data-dsh-translator-card-save]:focus-visible {
+[data-dsh-translator-settings-discard]:focus-visible,
+[data-dsh-translator-settings-save]:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary);
   outline-offset: 1px;
 }
@@ -572,8 +454,9 @@ const TRANSLATOR_CSS = `
 }
 `
 
+/** One POST to an exact Fetch route on the authenticated `/api` channel. */
 async function callApi(method, payload) {
-  const response = await fetch('/translator/api/' + method, {
+  const response = await fetch('api/translator/' + method, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
@@ -722,9 +605,18 @@ function ChevronDownIcon() {
   )
 }
 
+// The framework delivers the typed `t` seat (a `Translate(key, params)`
+// function) because both registrations declare `locale: 'dsh-translator'`; the
+// dictionary-backed fallback covers a seat the runtime did not forward.
+// Never read the dictionary by property here: `props.t` is a function, so
+// `t.tooltip` would silently be `undefined`.
+function translate(props) {
+  if (props && typeof props.t === 'function') return props.t
+  return (key) => I18N.zh[key]
+}
+
 function TranslatorRoot(props) {
-  const seat = react.useContext ? useI18n() : null
-  const t = (props && props.t) || seat.t
+  const t = translate(props)
   const [btn, setBtn] = react.useState(null)
   const [card, setCard] = react.useState(null)
   const [copied, setCopied] = react.useState(null)
@@ -760,8 +652,8 @@ function TranslatorRoot(props) {
 
   react.useEffect(() => {
     if (!copied) return
-    const t = setTimeout(() => setCopied(null), 1200)
-    return () => clearTimeout(t)
+    const timer = setTimeout(() => setCopied(null), 1200)
+    return () => clearTimeout(timer)
   }, [copied])
 
   function beginDrag(e) {
@@ -805,6 +697,7 @@ function TranslatorRoot(props) {
   }
 
   react.useEffect(() => {
+    unmounted = false
     function onMouseUp(e) {
       if (suppressNextUp) { suppressNextUp = false; return }
       if (dragging) return
@@ -868,8 +761,6 @@ function TranslatorRoot(props) {
       // Streaming output triggers continuous scroll events. Do not dismiss
       // the UI: reposition the button while the selection stays on screen,
       // hide only when it scrolls out of view. The card is fixed and stays.
-      // Never reveal a button for an in-progress selection (before mouseup):
-      // only reposition one that was already shown (stateRef.btnText match).
       const info = currentSelection()
       if (!info) { setBtn(null); stateRef.btnText = null; return }
       const r = info.rect
@@ -932,12 +823,12 @@ function TranslatorRoot(props) {
 
   function errorText(errCode, fallbackMessage) {
     const key = errCode && ERROR_KEY[errCode]
-    const text = key ? t[key] : undefined
+    const text = key ? t(key) : undefined
     if (text) return text
-    return fallbackMessage || t.errorFailed
+    return fallbackMessage || t('errorFailed')
   }
 
-  function translate(text) {
+  function translateText(text) {
     const id = ++requestSeq
     setCard(prev => prev ? { ...prev, status: 'loading', error: null, reqId: id } : prev)
     callApi('translate', { text, seq: id }).then((value) => {
@@ -950,7 +841,7 @@ function TranslatorRoot(props) {
       }
     }).catch((err) => {
       if (unmounted || id !== requestSeq) return
-      setCard(prev => prev ? { ...prev, status: 'error', error: errorText(err && err.code, (err && err.message) || t.errorRequestFailed) } : prev)
+      setCard(prev => prev ? { ...prev, status: 'error', error: errorText(err && err.code, (err && err.message) || t('errorRequestFailed')) } : prev)
     })
   }
 
@@ -967,7 +858,7 @@ function TranslatorRoot(props) {
     top = clamp(top, 8, Math.max(8, window.innerHeight - estH - 8))
     const left = clamp(rect.left, 8, Math.max(8, window.innerWidth - CARD_W - 8))
     setCard({ left, top, width: CARD_W, text: btn.text, status: 'loading', result: null, error: null, reqId: 0, anchor: rect })
-    translate(btn.text)
+    translateText(btn.text)
   }
 
   const children = []
@@ -976,7 +867,7 @@ function TranslatorRoot(props) {
       key: 'btn',
       'data-dsh-translator-btn': '',
       style: { left: btn.left + 'px', top: btn.top + 'px' },
-      title: t.tooltip,
+      title: t('tooltip'),
       onMouseDown: (e) => e.preventDefault(),
       onClick: openPopup,
     }, react.createElement(TranslateIcon)))
@@ -984,7 +875,7 @@ function TranslatorRoot(props) {
   if (card) {
     const bodyChildren = []
     if (card.status === 'loading') {
-      bodyChildren.push(react.createElement('div', { key: 'loading' }, t.translating))
+      bodyChildren.push(react.createElement('div', { key: 'loading' }, t('translating')))
     } else if (card.status === 'error') {
       bodyChildren.push(react.createElement('div', { key: 'err', 'data-dsh-translator-error': '' }, card.error))
     } else if (card.result) {
@@ -1003,14 +894,14 @@ function TranslatorRoot(props) {
       if (metaParts.length) footChildren.push(react.createElement('span', { key: 'dir', 'data-dsh-translator-meta': '' }, metaParts.join(' · ')))
     }
     if (card.result && card.result.truncated) {
-      footChildren.push(react.createElement('span', { key: 'trunc' }, t.truncated))
+      footChildren.push(react.createElement('span', { key: 'trunc' }, t('truncated')))
     }
     if (card.status === 'error') {
-      footChildren.push(react.createElement('button', { key: 'retry', 'data-dsh-translator-act': '', onClick: () => translate(card.text) }, t.retry))
+      footChildren.push(react.createElement('button', { key: 'retry', 'data-dsh-translator-act': '', onClick: () => translateText(card.text) }, t('retry')))
     }
     footChildren.push(react.createElement('div', { key: 'actions', 'data-dsh-translator-actions': '' },
-      react.createElement('button', { 'data-dsh-translator-pin': card.pinned ? 'on' : 'off', title: card.pinned ? t.unpin : t.pin, onClick: () => setCard(prev => prev ? { ...prev, pinned: !prev.pinned } : prev) }, react.createElement(PinIcon, { filled: card.pinned === true })),
-      react.createElement('button', { 'data-dsh-translator-close': '', title: t.close, onClick: () => { btnSuppressed = false; cancelLoadingCard(stateRef.card); setCard(null); refreshButton() } }, react.createElement(XIcon)),
+      react.createElement('button', { 'data-dsh-translator-pin': card.pinned ? 'on' : 'off', title: card.pinned ? t('unpin') : t('pin'), onClick: () => setCard(prev => prev ? { ...prev, pinned: !prev.pinned } : prev) }, react.createElement(PinIcon, { filled: card.pinned === true })),
+      react.createElement('button', { 'data-dsh-translator-close': '', title: t('close'), onClick: () => { btnSuppressed = false; cancelLoadingCard(stateRef.card); setCard(null); refreshButton() } }, react.createElement(XIcon)),
     ))
     children.push(react.createElement('div', {
       key: 'card',
@@ -1021,33 +912,119 @@ function TranslatorRoot(props) {
       react.createElement('div', { 'data-dsh-translator-source': '', onMouseDown: beginDrag, onClick: () => copy('source') }, card.text),
       react.createElement('div', { 'data-dsh-translator-body': '', onClick: () => copy('result') }, ...bodyChildren),
       react.createElement('div', { 'data-dsh-translator-foot': '' }, ...footChildren),
-      copied ? react.createElement('div', { key: 'copied', 'data-dsh-translator-copied': '' }, copied === 'source' ? t.copiedSource : t.copied) : null,
+      copied ? react.createElement('div', { key: 'copied', 'data-dsh-translator-copied': '' }, copied === 'source' ? t('copiedSource') : t('copied')) : null,
     ))
   }
   return react.createElement('div', { 'data-dsh-translator-root': '' }, ...children)
 }
 
-// Last-resort defaults. The official settings scope snapshot carries the
-// composition layer as `base` and the raw user section as `user` (field
-// PRESENCE there = user-overridden), so the card never needs its own copy of
-// the schema defaults except as this fallback while `base` is absent.
-const FALLBACK_DEFAULTS = { primaryLanguage: 'zh-Hans', customModel: { provider: '', model: '' }, reasoningEffort: 'low', timeoutMs: 30000, maxTokens: 1024, temperature: 0.3 }
-const CONFIG_FIELDS = ['primaryLanguage', 'customModel', 'reasoningEffort', 'timeoutMs', 'maxTokens', 'temperature']
-function userHas(field, user) {
-  return !!user && typeof user === 'object' && Object.prototype.hasOwnProperty.call(user, field)
+// ---------------------------------------------------------------------------
+// Plugins page: this bundle's own configuration.
+//
+// A bundle's configuration belongs on its own page in the Plugins list, in the
+// `plugins.bundle.config` seat keyed by the bundle's package name — the same
+// one-click placement an official plugin's page has. The page passes
+// `view: 'page'` and no form, so this half owns the entry's form through
+// `ctx.configForms.get(<row id>)`, exactly like the shipped settings pages do.
+//
+// The snapshot resolves `value` through schema defaults → composition base →
+// user layer, `base` is the layer a cleared field reverts to, and `user`'s
+// field PRESENCE marks a field overridden.
+// ---------------------------------------------------------------------------
+
+/** The bundle's package name: the `plugins.bundle.config` cell key. */
+const PACKAGE_NAME = '@nicearrack/dsh-translator'
+
+/** Settings namespace: the profile entry id our own patch row declares. */
+const SETTINGS_NS = 'dsh-translator'
+
+/** Schema defaults, used only when the Host reports no composition base. */
+const FALLBACK_BASE = { primaryLanguage: 'zh-Hans', customModel: { provider: '', model: '' }, reasoningEffort: 'low', timeoutMs: 30000, maxTokens: 1024, temperature: 0.3 }
+
+/**
+ * Every editable field path. `customModel` is addressed through its children
+ * because the schema marks the leaves volatile, not the container: a write to
+ * the parent path is refused as non-volatile.
+ */
+const MODEL_PROVIDER = ['customModel', 'provider']
+const MODEL_NAME = ['customModel', 'model']
+const CONFIG_PATHS = [
+  ['primaryLanguage'],
+  MODEL_PROVIDER,
+  MODEL_NAME,
+  ['reasoningEffort'],
+  ['timeoutMs'],
+  ['maxTokens'],
+  ['temperature'],
+]
+
+function atPath(root, path) {
+  let node = root
+  for (const key of path) {
+    if (node === null || typeof node !== 'object') return undefined
+    node = node[key]
+  }
+  return node
 }
-function sameConfig(a, b) {
-  if (a === b) return true
-  if (!a || !b) return false
-  return a.primaryLanguage === b.primaryLanguage
-    && a.timeoutMs === b.timeoutMs
-    && a.maxTokens === b.maxTokens && a.temperature === b.temperature
-    && a.reasoningEffort === b.reasoningEffort
-    && (a.customModel && a.customModel.provider) === (b.customModel && b.customModel.provider)
-    && (a.customModel && a.customModel.model) === (b.customModel && b.customModel.model)
+
+function hasPath(root, path) {
+  let node = root
+  for (const key of path) {
+    if (node === null || typeof node !== 'object' || !Object.prototype.hasOwnProperty.call(node, key)) return false
+    node = node[key]
+  }
+  return true
 }
+
+function cloneConfig(value) {
+  return value === null || typeof value !== 'object' ? value : JSON.parse(JSON.stringify(value))
+}
+
+function sameAtPath(a, b, path) {
+  return JSON.stringify(atPath(a, path)) === JSON.stringify(atPath(b, path))
+}
+
+/** Whether two already-resolved values are equal for a settings field. */
+function sameValue(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/** The layer value one field reverts to, falling back to the schema default. */
+function layerValue(base, path) {
+  const fromBase = atPath(base, path)
+  return (fromBase !== undefined && fromBase !== null) ? fromBase : atPath(FALLBACK_BASE, path)
+}
+
+/**
+ * Build the write for one draft against the Host's committed section.
+ *
+ * A changed field is `set`, or `unset` when the draft already equals the layer
+ * it would revert to (the Host then re-inherits or drops the entry). A field
+ * that is unchanged but still carries a stale user-layer entry equal to the
+ * layer is cleaned in the same write; its presence is invisible to the
+ * `overridden` badge, which tracks the effective difference.
+ * @param draft - the edited section.
+ * @param value - the committed resolved section.
+ * @param base - the composition layer beneath the user's entries.
+ * @param user - the raw user section, whose field presence marks an override.
+ * @returns ordered path operations for one atomic mutation.
+ */
+function settingsOps(draft, value, base, user) {
+  const ops = []
+  for (const path of CONFIG_PATHS) {
+    const changed = !sameAtPath(draft, value, path)
+    const atLayer = sameValue(atPath(draft, path), layerValue(base, path))
+    if (changed) {
+      ops.push(atLayer ? { op: 'unset', path } : { op: 'set', path, value: atPath(draft, path) })
+    } else if (atLayer && hasPath(user, path)) {
+      ops.push({ op: 'unset', path })
+    }
+  }
+  return ops
+}
+
 function ConfigSelect(props) {
-  const { value, onChange, options, placeholder } = props
+  const { value, onChange, options, placeholder, disabled } = props
   const [open, setOpen] = react.useState(false)
   const ref = react.useRef(null)
   const sel = options && options.find(o => o.value === value)
@@ -1060,7 +1037,7 @@ function ConfigSelect(props) {
     return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
   }, [open])
   return react.createElement('div', { 'data-dsh-translator-select': '', ref },
-    react.createElement('button', { 'data-dsh-translator-select-trigger': '', type: 'button', onClick: () => setOpen(!open), 'aria-haspopup': 'listbox', 'aria-expanded': open ? 'true' : 'false' },
+    react.createElement('button', { 'data-dsh-translator-select-trigger': '', type: 'button', disabled: disabled === true, onClick: () => setOpen(!open), 'aria-haspopup': 'listbox', 'aria-expanded': open ? 'true' : 'false' },
       react.createElement('span', { 'data-dsh-translator-select-label': '' }, sel ? sel.label : (placeholder || '')),
       react.createElement('span', { 'data-dsh-translator-select-arrow': '', 'aria-hidden': 'true' }, react.createElement(ChevronDownIcon)),
     ),
@@ -1069,152 +1046,173 @@ function ConfigSelect(props) {
     ) : null,
   )
 }
-function ConfigCard(props) {
-  const scope = props.scope
-  const seat = useI18n()
-  const t = (props && props.t) || seat.t
-  // Official settings transport (docs/reference/cookbook/adding-a-settings-card):
-  // snapshot = { status, value, base, user, revision, writable, mode }.
-  const [snap, setSnap] = react.useState(() => scope.getSnapshot())
-  const [cfg, setCfg] = react.useState(null)
+
+/** One-liner for the row description fallback (the bundle's own locale meta wins). */
+function SettingsSummary(props) {
+  const t = translate(props)
+  const state = snapshotOf(props)
+  const value = state ? state.value : null
+  if (value === null || value === undefined) return null
+  const pick = value.customModel && value.customModel.provider && value.customModel.model
+    ? value.customModel.provider + ' / ' + value.customModel.model
+    : t('followSession')
+  const parts = [langName(value.primaryLanguage), pick, value.reasoningEffort]
+  return react.createElement('span', { 'data-dsh-translator-summary': '' }, parts.filter(Boolean).join(' · '))
+}
+
+/** The current Host snapshot of the entry behind `props.form` (a `ConfigForm`). */
+function snapshotOf(props) {
+  const form = props.form
+  if (!form || typeof form.getSnapshot !== 'function') return null
+  return form.getSnapshot()
+}
+
+/** The bundle's configuration form. */
+function SettingsForm(props) {
+  const t = translate(props)
+  const form = props.form
+  // `plugins.bundle.config` is not a configuration page itself: it passes no
+  // snapshot, so this half subscribes to the shared entry form and re-renders
+  // on every revision the Host publishes.
+  const [state, setState] = react.useState(() => snapshotOf(props))
+  react.useEffect(() => {
+    if (!form || typeof form.subscribe !== 'function') return
+    return form.subscribe(() => setState(form.getSnapshot()))
+  }, [form])
+  const committed = state && state.status === 'ready' ? state.value : undefined
+  // Seed the draft on the first render that has a committed section (and again
+  // through the effect when the section arrives later), so the form never
+  // flashes an empty pass.
+  const [draft, setDraft] = react.useState(() => (committed ? cloneConfig(committed) : null))
   const [models, setModels] = react.useState([])
   const [defaultModel, setDefaultModel] = react.useState(null)
-  const [open, setOpen] = react.useState(false)
   const [status, setStatus] = react.useState('')
   const [saving, setSaving] = react.useState(false)
-  const cardRef = react.useRef(null)
-  react.useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [])
+
   react.useEffect(() => {
-    if (cfg === null && snap.status === 'ready' && snap.value) setCfg(snap.value)
-  }, [snap, cfg])
-  react.useEffect(() => {
-    if (!open || !cardRef.current) return
-    const t = setTimeout(() => {
-      if (cardRef.current) cardRef.current.scrollIntoView({ block: 'end', inline: 'nearest' })
-    }, 40)
-    return () => clearTimeout(t)
-  }, [open])
+    if (draft === null && committed) setDraft(cloneConfig(committed))
+  }, [committed, draft])
   react.useEffect(() => {
     callApi('list-models').then((value) => { if (Array.isArray(value)) setModels(value) }).catch(() => {})
     callApi('default-model').then((value) => { if (value && typeof value === 'object') setDefaultModel(value) }).catch(() => {})
   }, [])
-  if (snap.status !== 'ready' || !snap.value || cfg === null) return null
-  const value = snap.value
-  const base = snap.base || FALLBACK_DEFAULTS
-  const layerField = (field) => {
-    const b = base && typeof base === 'object' ? base[field] : undefined
-    return (b !== undefined && b !== null) ? b : FALLBACK_DEFAULTS[field]
+
+  if (state === null || state.status !== 'ready' || !committed || draft === null) return null
+  const disabled = state.writable === false
+  const value = committed
+  const base = state.base && typeof state.base === 'object' ? state.base : FALLBACK_BASE
+  const isOverridden = (path) => !sameValue(atPath(draft, path), layerValue(base, path))
+  // The model is two leaves shown as one control: the badge and reset follow
+  // the pair, while the write still addresses each volatile leaf.
+  const modelOverridden = () => !sameValue(
+    [atPath(draft, MODEL_PROVIDER), atPath(draft, MODEL_NAME)],
+    [layerValue(base, MODEL_PROVIDER), layerValue(base, MODEL_NAME)],
+  )
+  const resetModel = () => {
+    setPath(MODEL_PROVIDER, layerValue(base, MODEL_PROVIDER))
+    setPath(MODEL_NAME, layerValue(base, MODEL_NAME))
   }
-  const set = (k, v) => setCfg(prev => prev ? { ...prev, [k]: v } : prev)
-  // Dirty = the draft differs from the committed snapshot, nothing else:
-  // restoring a field to its layer value while the committed value equals
-  // that layer means there is nothing to persist, so 保存/放弃修改 stay
-  // disabled. A user-layer entry that merely repeats the default (left over
-  // from a full-section write) shows no badge either — the badge tracks the
-  // effective difference, and stale entries are cleaned on the next real save.
-  const dirty = !sameConfig(cfg, value)
-  const customKey = (cfg.customModel && cfg.customModel.provider && cfg.customModel.model)
-    ? (cfg.customModel.provider + '/' + cfg.customModel.model) : ''
-  const modelKey = customKey || (defaultModel ? (defaultModel.provider + '/' + defaultModel.model) : '')
-  // Live override state: a field is shown as 「已覆盖」 when its effective
-  // value leaves the composition layer (row config). Draft-based, so the
-  // badge vanishes the moment「恢复默认」restores the layer value and appears
-  // the moment a typed value leaves it — before anything is saved. Presence
-  // alone (a user-layer entry equal to the default) does not light the badge.
-  function isOverridden(field) {
-    return JSON.stringify(cfg[field]) !== JSON.stringify(layerField(field))
-  }
-  function resetField(field) {
-    const v = layerField(field)
-    if (field === 'customModel') set('customModel', { provider: (v && v.provider) || '', model: (v && v.model) || '' })
-    else set(field, v)
-  }
-  function save() {
-    const ops = []
-    for (const field of CONFIG_FIELDS) {
-      const changed = JSON.stringify(cfg[field]) !== JSON.stringify(value[field])
-      const atLayer = JSON.stringify(cfg[field]) === JSON.stringify(layerField(field))
-      // A real change: set the user choice, or clear it when it now equals
-      // the layer. A stale user-layer entry equal to the default is cleaned
-      // together with a real save (its presence is invisible to the badge).
-      if (changed) {
-        ops.push(atLayer ? { op: 'unset', path: [field] } : { op: 'set', path: [field], value: cfg[field] })
-      } else if (atLayer && userHas(field, snap.user)) {
-        ops.push({ op: 'unset', path: [field] })
-      }
+  const setPath = (path, v) => setDraft((prev) => {
+    if (!prev) return prev
+    const next = cloneConfig(prev)
+    let node = next
+    for (const key of path.slice(0, -1)) {
+      if (node[key] === null || typeof node[key] !== 'object') node[key] = {}
+      node = node[key]
     }
+    node[path[path.length - 1]] = v
+    return next
+  })
+  const dirty = CONFIG_PATHS.some(path => !sameAtPath(draft, value, path))
+
+  function resetPath(path) {
+    setPath(path, layerValue(base, path))
+  }
+
+  function save() {
+    const ops = settingsOps(draft, value, base, state.user)
     if (ops.length === 0) return
     setSaving(true); setStatus('')
-    scope.mutate(ops, snap.revision).then(() => {
-      setSaving(false); setStatus(t.saved)
+    form.mutate(ops, state.revision).then((accepted) => {
+      setSaving(false)
+      setStatus(accepted === false ? t('saveFailed') : t('saved'))
       setTimeout(() => setStatus(''), 1500)
     }).catch((err) => {
       setSaving(false)
-      setStatus((err && err.message) || t.saveFailed)
+      setStatus((err && err.message) || t('saveFailed'))
       setTimeout(() => setStatus(''), 1500)
     })
   }
+
   function discard() {
-    setStatus(''); setCfg(value)
+    setStatus('')
+    setDraft(cloneConfig(value))
   }
-  function fieldHead(labelText, field) {
-    const over = isOverridden(field)
+
+  function fieldHead(labelText, over, onReset) {
     return react.createElement('div', { 'data-dsh-translator-field-head': '' },
       react.createElement('span', { 'data-dsh-translator-field-label': '' }, labelText),
       over ? react.createElement('span', { 'data-dsh-translator-field-badges': '' },
-        react.createElement('span', { 'data-dsh-translator-badge': '' }, t.overridden),
-        react.createElement('button', { 'data-dsh-translator-reset': '', type: 'button', onClick: () => resetField(field) }, t.resetDefault),
+        react.createElement('span', { 'data-dsh-translator-badge': '' }, t('overridden')),
+        react.createElement('button', { 'data-dsh-translator-reset': '', type: 'button', disabled, onClick: onReset }, t('resetDefault')),
       ) : null,
     )
   }
+
   const langCodes = Object.keys(LANG_NAMES).filter(c => c !== 'en')
-  return react.createElement('div', { 'data-dsh-translator-plugin-card': '', 'data-open': open ? '1' : undefined, ref: cardRef },
-    react.createElement('button', { 'data-dsh-translator-card-header': '', 'aria-expanded': open ? 'true' : 'false', onClick: () => setOpen(!open) },
-      react.createElement('span', { 'data-dsh-translator-card-headtext': '' },
-        react.createElement('span', { 'data-dsh-translator-card-name': '' }, t.cardTitle),
-        react.createElement('span', { 'data-dsh-translator-card-desc': '' }, t.cardDesc),
-      ),
-      react.createElement('span', { 'data-dsh-translator-card-chevron': open ? 'open' : '' }, react.createElement(ChevronDownIcon)),
+  const custom = draft.customModel || {}
+  const customKey = (custom.provider && custom.model) ? (custom.provider + '/' + custom.model) : ''
+  const modelKey = customKey || (defaultModel ? (defaultModel.provider + '/' + defaultModel.model) : '')
+  const field = (labelText, path, control, over, onReset) => react.createElement('div', { 'data-dsh-translator-field': '' },
+    fieldHead(labelText, over === undefined ? isOverridden(path) : over, onReset || (() => resetPath(path))),
+    control,
+  )
+  const numberInput = (path, extra) => react.createElement('input', {
+    type: 'number', value: atPath(draft, path), disabled, ...extra,
+    onChange: (e) => setPath(path, Number(e.target.value)),
+  })
+
+  return react.createElement('div', { 'data-dsh-translator-settings': '' },
+    field(t('primaryLanguage'), ['primaryLanguage'],
+      react.createElement(ConfigSelect, { value: draft.primaryLanguage, disabled, onChange: (v) => setPath(['primaryLanguage'], v), options: langCodes.map(c => ({ value: c, label: langName(c) })) })),
+    field(t('model'), MODEL_PROVIDER,
+      react.createElement(ConfigSelect, {
+        value: modelKey,
+        disabled,
+        onChange: (v) => {
+          const i = v.indexOf('/')
+          if (i > 0) { setPath(MODEL_PROVIDER, v.slice(0, i)); setPath(MODEL_NAME, v.slice(i + 1)) }
+        },
+        options: models.map(m => ({ value: m.provider + '/' + m.model, label: m.label })),
+        placeholder: modelKey || t('followSession'),
+      }), modelOverridden(), resetModel),
+    react.createElement('div', { 'data-dsh-translator-field-hint': '' }, t('modelHint')),
+    react.createElement('div', { 'data-dsh-translator-settings-row': '' },
+      field(t('reasoningLevel'), ['reasoningEffort'],
+        react.createElement(ConfigSelect, { value: draft.reasoningEffort, disabled, onChange: (v) => setPath(['reasoningEffort'], v), options: [{ value: 'off', label: 'off' }, { value: 'low', label: 'low' }, { value: 'high', label: 'high' }, { value: 'max', label: 'max' }] })),
+      field(t('maxTokens'), ['maxTokens'], numberInput(['maxTokens'], { min: 1 })),
     ),
-    open ? react.createElement('div', { 'data-dsh-translator-card-body': '', 'data-dsh-translator-settings': '' },
-      react.createElement('div', { 'data-dsh-translator-field': '' },
-        fieldHead(t.primaryLanguage, 'primaryLanguage'),
-        react.createElement(ConfigSelect, { value: cfg.primaryLanguage, onChange: (v) => set('primaryLanguage', v), options: langCodes.map(c => ({ value: c, label: langName(c) })) }),
-      ),
-      react.createElement('div', { 'data-dsh-translator-field': '' },
-        fieldHead(t.model, 'customModel'),
-        react.createElement(ConfigSelect, { value: modelKey, onChange: (v) => { const i = v.indexOf('/'); if (i > 0) set('customModel', { provider: v.slice(0, i), model: v.slice(i + 1) }) }, options: models.map(m => ({ value: m.provider + '/' + m.model, label: m.label })) }),
-      ),
-      react.createElement('div', { 'data-dsh-translator-field-row': '' },
-        react.createElement('div', { 'data-dsh-translator-field': '' },
-          fieldHead(t.reasoningLevel, 'reasoningEffort'),
-          react.createElement(ConfigSelect, { value: cfg.reasoningEffort, onChange: (v) => set('reasoningEffort', v), options: [{ value: 'off', label: 'off' }, { value: 'low', label: 'low' }, { value: 'high', label: 'high' }, { value: 'max', label: 'max' }] }),
-        ),
-        react.createElement('div', { 'data-dsh-translator-field': '' },
-          fieldHead(t.maxTokens, 'maxTokens'),
-          react.createElement('input', { type: 'number', value: cfg.maxTokens, min: 1, onChange: (e) => set('maxTokens', Number(e.target.value) || 1024) }),
-        ),
-      ),
-      react.createElement('div', { 'data-dsh-translator-field-row': '' },
-        react.createElement('div', { 'data-dsh-translator-field': '' },
-          fieldHead(t.timeout, 'timeoutMs'),
-          react.createElement('input', { type: 'number', value: cfg.timeoutMs, min: 1000, onChange: (e) => set('timeoutMs', Number(e.target.value) || 30000) }),
-        ),
-        react.createElement('div', { 'data-dsh-translator-field': '' },
-          fieldHead(t.temperature, 'temperature'),
-          react.createElement('input', { type: 'number', step: 0.1, min: 0, max: 2, value: cfg.temperature, onChange: (e) => set('temperature', Number(e.target.value) || 0.3) }),
-        ),
-      ),
-      react.createElement('div', { 'data-dsh-translator-card-footer': '' },
-        react.createElement('button', { 'data-dsh-translator-card-discard': '', onClick: discard, disabled: !dirty || saving }, t.discard),
-        react.createElement('button', { 'data-dsh-translator-card-save': '', onClick: save, disabled: !dirty || saving }, saving ? t.saving : t.save),
-        status ? react.createElement('span', { 'data-dsh-translator-settings-status': '' }, status) : null,
-      ),
-    ) : null,
+    react.createElement('div', { 'data-dsh-translator-settings-row': '' },
+      field(t('timeout'), ['timeoutMs'], numberInput(['timeoutMs'], { min: 1000 })),
+      field(t('temperature'), ['temperature'], numberInput(['temperature'], { step: 0.1, min: 0, max: 2 })),
+    ),
+    react.createElement('div', { 'data-dsh-translator-settings-footer': '' },
+      status
+        ? react.createElement('span', { 'data-dsh-translator-settings-status': '' }, status)
+        : (disabled ? react.createElement('span', { 'data-dsh-translator-settings-status': '' }, t('readOnly')) : null),
+      react.createElement('button', { 'data-dsh-translator-settings-discard': '', type: 'button', disabled: !dirty || saving, onClick: discard }, t('discard')),
+      react.createElement('button', { 'data-dsh-translator-settings-save': '', type: 'button', disabled: !dirty || saving, onClick: save }, saving ? t('saving') : t('save')),
+    ),
   )
 }
 
-const inject = ['slots', 'settingsScope', 'locale']
+/** The `plugins.bundle.config` occupant: the page asks for a one-liner or the form. */
+function TranslatorSettings(props) {
+  if (props.view === 'summary') return react.createElement(SettingsSummary, props)
+  return react.createElement(SettingsForm, props)
+}
+
+const inject = ['slots', 'locale', 'configForms']
 
 function apply(ctx) {
   const styleEl = document.createElement('style')
@@ -1224,34 +1222,21 @@ function apply(ctx) {
 
   const slots = ctx.slots
   if (slots === undefined) return
-  // Official settings-namespace scope (docs/reference/cookbook/adding-a-settings-card):
-  // snapshot and writes ride the settings transport; the business API stays HTTP.
-  const scope = ctx.settingsScope.bind({ namespace: 'dsh-translator' })
-  // Official locale wiring (the slots register options below declare the
-  // namespace, which puts the typed `t` seat on the component props and
-  // re-renders it on locale switches).
-  ctx.locale.register('dsh-translator', I18N)
-  const locale = ctx.locale
-  function LocaleBound(props) {
-    const [active, setActive] = react.useState(() => {
-      try { return (locale && locale.getSnapshot && locale.getSnapshot().active) || 'zh' } catch (err) { return 'zh' }
-    })
-    react.useEffect(() => {
-      if (!locale || !locale.subscribe) return
-      const un = locale.subscribe(() => {
-        try { setActive((locale.getSnapshot && locale.getSnapshot().active) || 'zh') } catch (err) { /* ignore */ }
-      })
-      return () => { if (un) un() }
-    }, [])
-    const t = I18N[active === 'en' ? 'en' : 'zh']
-    return react.createElement(LocaleCtx.Provider, { value: { t } }, props.children)
-  }
+  ctx.effect(() => ctx.locale.register('dsh-translator', I18N), 'dsh-translator: dictionaries')
   slots.inject('shell.overlay', () => slots.register(
     { name: 'shell.overlay', id: 'dsh-translator-overlay', locale: 'dsh-translator' },
-    () => react.createElement(LocaleBound, null, react.createElement(TranslatorRoot)),
+    TranslatorRoot,
   ))
-  slots.inject('settings.plugin.item', () => slots.register(
-    { name: 'settings.plugin.item', key: 'dsh-translator', locale: 'dsh-translator' },
-    () => react.createElement(LocaleBound, null, react.createElement(ConfigCard, { scope })),
-  ))
+  // The bundle's own configuration, rendered on this bundle's page in the
+  // Plugins list: one click from the list, no intermediate row page. The entry
+  // form comes from the shared settings transport; the registration appears
+  // only while the Host actually serves our namespace.
+  const form = ctx.configForms.get(SETTINGS_NS)
+  ctx.effect(() => ctx.configForms.whileServed([SETTINGS_NS], () => slots.inject(
+    'plugins.bundle.config',
+    () => slots.register(
+      { name: 'plugins.bundle.config', key: PACKAGE_NAME, locale: 'dsh-translator' },
+      (props) => react.createElement(TranslatorSettings, { ...props, form }),
+    ),
+  )), 'dsh-translator: bundle settings page')
 }
