@@ -27,5 +27,10 @@ stability/
 .fonts-cache/
 fontconfig.conf
 
+# credentials — a project-level .npmrc can carry an _authToken, so it must never
+# be staged by a `git add -A`
+.npmrc
+.npmrc.local
+
 # machine-specific dev overlay (absolute paths)
 dev.patch.yml
