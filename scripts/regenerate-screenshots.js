@@ -4,6 +4,18 @@
 // session literally named 「截图专用」 in the instance it is pointed at, so that
 // no real conversation ever ends up in the README.
 //
+// The fixture session is reproducible: start a new session in a scratch
+// workspace, send these two prompts, then rename it to 截图专用 (right-click is
+// not it — the row's ⋯ button appears on hover and offers 重命名):
+//
+//   1. 用 echo 命令演示一下：运行 echo hello world，然后用中文简单解释 echo 是做什么的。
+//   2. Now explain in one short English sentence what the echo command does with its arguments.
+//
+// The PHRASES selected below are taken from that exchange. If you reword the
+// prompts, update them too — the script fails loudly when it cannot find one
+// (「en reply not found」, 「zh phrase not found」), it does not silently produce
+// a wrong crop.
+//
 // Prerequisites, the same as tests/client.smoke.mjs:
 //   npm i -D playwright && npx playwright install chromium
 //   a running DSH instance carrying the plugin
@@ -47,6 +59,25 @@ const FONT_FAMILY = 'LXGW WenKai'
 const FONT_CACHE = join(ROOT, '.fonts-cache')
 const OUT = join(ROOT, 'screenshots')
 const WIDTH = 815
+
+/**
+ * The exact strings the fixture session is expected to contain.
+ *
+ * `enReply` is the whole English sentence, because the point of the en→zh
+ * screenshot is to show an English passage selected with its Chinese
+ * translation beneath it — selecting an English token out of the Chinese
+ * prompt instead reads as neither direction. `zhReply` is the matching Chinese
+ * sentence for the reverse shot.
+ *
+ * These have to be runs that live inside a SINGLE text node: selection works by
+ * finding one node containing the string. `echo` is rendered in its own code
+ * chip, so the sentence below deliberately starts after it.
+ */
+const FIXTURE = {
+  enShort: 'prints its arguments',
+  enReply: 'prints its arguments to standard output, separated by spaces, followed by a newline.',
+  zhReply: '把传给它的参数原样打印到标准输出',
+}
 
 /**
  * The `FONTCONFIG_FILE` env chromium should get, or nothing when there is no
@@ -112,14 +143,54 @@ async function main() {
   await page.getByText('截图专用', { exact: true }).first().click()
   await page.waitForTimeout(4000)
 
-  const conv = await page.evaluate(() => {
+  /** The conversation column's CURRENT viewport rect. Re-measured per crop. */
+  const convRect = () => page.evaluate(() => {
     const el = document.querySelector('.SLC67a_scroll')
     if (!el) return null
     const r = el.getBoundingClientRect()
     return { x: r.x, y: r.y, width: r.width, height: r.height }
   })
-  if (!conv) { console.error('no conversation container'); await browser.close(); process.exit(1) }
-  console.log('conv:', JSON.stringify(conv))
+  if (!(await convRect())) { console.error('no conversation container'); await browser.close(); process.exit(1) }
+
+  /**
+   * Bring the flow item containing `text` into view, and let the scroll settle.
+   *
+   * Measuring without this yields rects measured against a scrolled container —
+   * seen here as `y: -166` for the prompt and `conv.y: -182` — so the crop lands
+   * on the session header instead of the message. Note that scrolling also moves
+   * the container itself, which is why the rect is re-read for every crop
+   * rather than captured once at the start.
+   */
+  const scrollTo = async (text) => {
+    const found = await page.evaluate((t) => {
+      const conv = document.querySelector('.SLC67a_scroll')
+      if (!conv) return false
+      const w = document.createTreeWalker(conv, NodeFilter.SHOW_TEXT)
+      let n
+      while ((n = w.nextNode())) {
+        if ((n.textContent || '').includes(t)) {
+          const item = n.parentElement.closest('.SLC67a_flowItem')
+          if (item) { item.scrollIntoView({ block: 'center' }); return true }
+        }
+      }
+      return false
+    }, text)
+    if (found) await page.waitForTimeout(1000)
+    return found
+  }
+
+  /**
+   * One crop region: the full conversation column, from `top` down to `bottom`.
+   *
+   * The width is the whole column rather than a narrower slice because the
+   * translation card is clamped to the window, not to this column — a narrower
+   * crop slices its right edge and the close button off.
+   */
+  const crop = async (top, bottom) => {
+    const c = await convRect()
+    const y = Math.max(0, top)
+    return { x: Math.max(0, c.x), y, width: c.width, height: Math.max(0, bottom - y) }
+  }
 
   const selectText = (text, n) => page.evaluate(([t, len]) => {
     const w = document.createTreeWalker(document.querySelector('.SLC67a_scroll'), NodeFilter.SHOW_TEXT)
@@ -157,17 +228,35 @@ async function main() {
     return false
   }
 
+  /** Poll until the card settles into a result or a visible error. */
+  const waitCard = async (maxMs = 45000) => {
+    const deadline = Date.now() + maxMs
+    while (Date.now() < deadline) {
+      const state = await page.evaluate(() => {
+        const card = document.querySelector('[data-dsh-translator-card]')
+        if (!card) return 'gone'
+        if (card.querySelector('[data-dsh-translator-meta]')) return 'done'
+        if (card.querySelector('[data-dsh-translator-error]')) return 'error'
+        return 'loading'
+      })
+      if (state === 'done' || state === 'error') return state
+      await page.waitForTimeout(500)
+    }
+    return 'loading'
+  }
+
   // ── 1. select-button.png ────────────────────────────────────────────────
   // Short sessions show the conversation header (workspace chip + created
-  // date) above the messages — the earlier crop picked it up as a black
-  // block. Crop from the selected reply itself: button above, reply below.
-  if (!(await selectText('prints its arguments', 20))) { console.error('en reply not found'); await browser.close(); process.exit(1) }
+  // date) above the messages. Scroll the reply to the middle first, then crop
+  // from the reply itself: button above, reply below.
+  if (!(await scrollTo(FIXTURE.enShort))) { console.error('en reply not found'); await browser.close(); process.exit(1) }
+  if (!(await selectText(FIXTURE.enShort, 20))) { console.error('en reply not found'); await browser.close(); process.exit(1) }
   if (await waitButton()) {
-    const reply = await itemRectOf('prints its arguments')
+    const reply = await itemRectOf(FIXTURE.enShort)
     const btn = await page.evaluate(() => { const b = document.querySelector('[data-dsh-translator-btn]'); return b ? b.getBoundingClientRect().toJSON() : null })
     if (reply) {
       const top = Math.min(reply.y, btn ? btn.y : reply.y) - 12
-      const clip = { x: Math.max(0, conv.x + 12), y: Math.max(0, top), width: Math.min(WIDTH, conv.width - 24), height: reply.y + reply.height - top + 12 }
+      const clip = await crop(top, reply.y + reply.height + 12)
       await page.screenshot({ path: join(OUT, 'select-button.png'), clip })
       console.log('saved select-button.png', JSON.stringify(clip))
     }
@@ -175,16 +264,17 @@ async function main() {
 
   // ── 2. en-zh.png ────────────────────────────────────────────────────────
   await page.keyboard.press('Escape'); await page.waitForTimeout(300)
-  if (!(await selectText('hello world', 11))) { console.error('prompt not found'); await browser.close(); process.exit(1) }
+  if (!(await scrollTo(FIXTURE.enReply))) { console.error('en reply not found'); await browser.close(); process.exit(1) }
+  if (!(await selectText(FIXTURE.enReply, FIXTURE.enReply.length))) { console.error('en reply not found'); await browser.close(); process.exit(1) }
   if (await waitButton()) {
     await page.evaluate(() => { document.querySelector('[data-dsh-translator-btn]')?.click() })
-    await page.waitForTimeout(45000)
-    const bubble = await itemRectOf('hello world')
-    const echo = await itemRectOf('echo prints its arguments')
+    const settled = await waitCard()
+    if (settled !== 'done') console.error('en-zh: card did not settle on a result:', settled)
+    const bubble = await itemRectOf(FIXTURE.enReply)
     const card = await page.evaluate(() => document.querySelector('[data-dsh-translator-card]')?.getBoundingClientRect().toJSON() || null)
-    const bottom = Math.max(echo ? (echo.y + echo.height) : 0, card ? card.bottom : 0)
+    const bottom = Math.max(bubble ? (bubble.y + bubble.height) : 0, card ? card.bottom : 0)
     if (bubble) {
-      const clip = { x: Math.max(0, conv.x + 12), y: Math.max(0, bubble.y - 12), width: Math.min(WIDTH, conv.width - 24), height: bottom - bubble.y + 24 }
+      const clip = await crop(bubble.y - 12, bottom + 12)
       await page.screenshot({ path: join(OUT, 'en-zh.png'), clip })
       console.log('saved en-zh.png', JSON.stringify(clip))
     }
@@ -192,16 +282,18 @@ async function main() {
 
   // ── 3. zh-en.png ────────────────────────────────────────────────────────
   await page.keyboard.press('Escape'); await page.waitForTimeout(300)
-  if (!(await selectText('把跟在它后面的内容原样打印到屏幕（标准输出）上', 26))) { console.error('zh phrase not found'); await browser.close(); process.exit(1) }
+  if (!(await scrollTo(FIXTURE.zhReply))) { console.error('zh phrase not found'); await browser.close(); process.exit(1) }
+  if (!(await selectText(FIXTURE.zhReply, FIXTURE.zhReply.length))) { console.error('zh phrase not found'); await browser.close(); process.exit(1) }
   if (await waitButton()) {
     await page.evaluate(() => { document.querySelector('[data-dsh-translator-btn]')?.click() })
-    await page.waitForTimeout(45000)
+    const settled = await waitCard()
+    if (settled !== 'done') console.error('zh-en: card did not settle on a result:', settled)
     const sel = await page.evaluate(() => { const s = window.getSelection(); const n = s && s.anchorNode; const item = n && n.parentElement && n.parentElement.closest('.SLC67a_flowItem'); return item ? item.getBoundingClientRect().toJSON() : null })
     const next = await page.evaluate(() => { const s = window.getSelection(); const n = s && s.anchorNode; const item = n && n.parentElement && n.parentElement.closest('.SLC67a_flowItem'); const nx = item && item.nextElementSibling; return nx ? nx.getBoundingClientRect().toJSON() : null })
     const card = await page.evaluate(() => document.querySelector('[data-dsh-translator-card]')?.getBoundingClientRect().toJSON() || null)
     if (sel) {
       const bottom = Math.max(next ? (next.y + next.height) : 0, card ? card.bottom : 0)
-      const clip = { x: Math.max(0, conv.x + 12), y: Math.max(0, sel.y - 12), width: Math.min(WIDTH, conv.width - 24), height: bottom - sel.y + 24 }
+      const clip = await crop(sel.y - 12, bottom + 12)
       await page.screenshot({ path: join(OUT, 'zh-en.png'), clip })
       console.log('saved zh-en.png', JSON.stringify(clip))
     }

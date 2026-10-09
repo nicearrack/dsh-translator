@@ -14,7 +14,14 @@
 
 ## 安装
 
-在 DSH 的**插件**页点「添加插件」，填入 `@nicearrack/dsh-translator` 即可。以后要移除，在同一个页面卸载。
+在 DSH 的**插件**页点「添加插件」，npm 包名或 GitHub 地址都可以：
+
+```
+@nicearrack/dsh-translator
+https://github.com/nicearrack/dsh-translator
+```
+
+以后要移除，在同一个页面卸载。
 
 ## 使用
 
