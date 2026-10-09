@@ -418,6 +418,50 @@ test('translate: every provider failing reports api-failed, never a model code',
   assert.ok(out.body.error.detail.length >= 2)
 })
 
+test('translate: a benched chain says so, and re-asks nobody', async () => {
+  const { routes } = makeCtx()
+  await withFetch(() => ({ status: 503, text: 'down' }), async (seen) => {
+    const first = await hit(routes, TRANSLATE, { text: 'Hello world' })
+    assert.equal(first.body.error.code, 'api-failed')
+    const afterFirst = seen.length
+
+    const second = await hit(routes, TRANSLATE, { text: 'Hello again' })
+    assert.equal(second.body.error.code, 'api-failed')
+    // Every record carries the locale-independent reason the card renders.
+    assert.ok(second.body.error.detail.every(a => a.reason === 'benched'),
+      JSON.stringify(second.body.error.detail))
+    // The point of the cooldown: not one request goes out the second time.
+    assert.equal(seen.length, afterFirst)
+  })
+})
+
+test('translate: retry forces past every cooldown', async () => {
+  const { routes } = makeCtx()
+  let healthy = false
+  await withFetch((href) => {
+    if (healthy && href.includes('transmart.qq.com')) {
+      return { json: { header: { ret_code: 'succ' }, auto_translation: ['你好'] } }
+    }
+    return { status: 503, text: 'down' }
+  }, async (seen) => {
+    const first = await hit(routes, TRANSLATE, { text: 'Hello world' })
+    assert.equal(first.body.error.code, 'api-failed')
+    const afterFirst = seen.length
+
+    // The network heals, but every provider is still benched.
+    healthy = true
+    const stillBenched = await hit(routes, TRANSLATE, { text: 'Hello world' })
+    assert.equal(stillBenched.body.error.code, 'api-failed')
+    assert.equal(seen.length, afterFirst)
+
+    // An explicit retry ignores the cooldown and reaches the network again.
+    const forced = await hit(routes, TRANSLATE, { text: 'Hello world', retry: true })
+    assert.equal(forced.body.ok, true)
+    assert.equal(forced.body.value.provider, 'tencent')
+    assert.ok(seen.length > afterFirst, 'the forced retry actually hit the network')
+  })
+})
+
 test('translate: mymemory is skipped for text beyond its 500-byte cap', async () => {
   const { routes } = makeCtx()
   await withFetch((href) => {

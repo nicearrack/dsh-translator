@@ -64,6 +64,9 @@ const I18N = {
     errorApiFailed: '免费翻译接口暂时不可用，请稍后重试，或把引擎切换为「大模型」',
     errorFailed: '翻译失败',
     errorRequestFailed: '翻译请求失败',
+    errorApiBenched: '所有翻译服务都在冷却中（上次失败后暂不重试）——点「重试」可立即强制再试',
+    reasonBenched: '冷却中', reasonUnsupported: '不支持该语言', reasonTooLong: '文本过长',
+    reasonEcho: '返回了原文', reasonFailed: '请求失败',
   },
   en: {
     tooltip: 'Word-selection translation', translating: 'Translating…', truncated: '(may be truncated)',
@@ -89,6 +92,9 @@ const I18N = {
     errorApiFailed: 'The free translation endpoints are unavailable — try again later, or switch the engine to Model',
     errorFailed: 'Translation failed',
     errorRequestFailed: 'Translation request failed',
+    errorApiBenched: 'Every translation service is cooling down after an earlier failure — press Retry to force an immediate attempt',
+    reasonBenched: 'cooling down', reasonUnsupported: 'target unsupported', reasonTooLong: 'text too long',
+    reasonEcho: 'echoed the source', reasonFailed: 'request failed',
   },
 }
 const ERROR_KEY = {
@@ -101,6 +107,14 @@ const ERROR_KEY = {
   'model-error': 'errorModelFailed',
   'api-failed': 'errorApiFailed',
 }
+/** Per-attempt reason (`errors[].reason` from the Host) → dictionary key. */
+const REASON_KEY = {
+  'benched': 'reasonBenched',
+  'unsupported': 'reasonUnsupported',
+  'too-long': 'reasonTooLong',
+  'echo': 'reasonEcho',
+  'failed': 'reasonFailed',
+}
 const LANG_NAMES = {
   'zh-Hans': '简体中文', 'zh-Hant': '繁體中文', 'ja-JP': '日本語', 'ko-KR': '한국어', 'ru-RU': 'Русский', 'en': 'English',
 }
@@ -111,6 +125,30 @@ function providerName(t, id) {
   if (!id) return ''
   const label = t('provider' + id.charAt(0).toUpperCase() + id.slice(1))
   return label || id
+}
+/**
+ * Secondary line under a card error, built from the locale-independent
+ * `{ provider, reason, error }` records the Host sends as `error.detail`.
+ * Rendering the reason through the dictionary keeps the provider's raw English
+ * text out of the card.
+ *
+ * A fully benched chain is named outright rather than listed: every provider
+ * skipped without a request is the one case where the generic "endpoints are
+ * unavailable" is actively misleading — the endpoints are fine, this plugin
+ * just is not asking them.
+ */
+function failureDetail(t, detail) {
+  if (!Array.isArray(detail) || detail.length === 0) return null
+  const records = detail.filter(d => d && typeof d === 'object' && typeof d.provider === 'string')
+  if (records.length === 0) return null
+  if (records.every(d => d.reason === 'benched')) return t('errorApiBenched')
+  const parts = records.map((d) => {
+    const key = REASON_KEY[d.reason]
+    const reason = key ? t(key) : null
+    const name = providerName(t, d.provider)
+    return reason ? name + ': ' + reason : name
+  })
+  return parts.join(' · ')
 }
 function formatTokens(n) {
   if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
@@ -219,6 +257,12 @@ const TRANSLATOR_CSS = `
 }
 [data-dsh-translator-error] {
   color: var(--dsw-alias-state-error-primary);
+}
+[data-dsh-translator-error-detail] {
+  margin-top: 6px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.4;
 }
 [data-dsh-translator-foot] {
   display: flex;
@@ -853,10 +897,11 @@ function TranslatorRoot(props) {
     return fallbackMessage || t('errorFailed')
   }
 
-  function translateText(text) {
+  function translateText(text, opts) {
+    const retry = opts !== undefined && opts.retry === true
     const id = ++requestSeq
-    setCard(prev => prev ? { ...prev, status: 'loading', error: null, reqId: id } : prev)
-    callApi('translate', { text, seq: id }).then((value) => {
+    setCard(prev => prev ? { ...prev, status: 'loading', error: null, errorDetail: null, reqId: id } : prev)
+    callApi('translate', { text, seq: id, retry }).then((value) => {
       if (unmounted || id !== requestSeq) return
       const v = value && typeof value === 'object' ? value : {}
       if (typeof v.text === 'string') {
@@ -871,7 +916,7 @@ function TranslatorRoot(props) {
       // it through errorText would fall through to err.message and print the
       // raw internal token on the card.
       if (err && err.code === 'cancelled') return
-      setCard(prev => prev ? { ...prev, status: 'error', error: errorText(err && err.code, (err && err.message) || t('errorRequestFailed')) } : prev)
+      setCard(prev => prev ? { ...prev, status: 'error', error: errorText(err && err.code, (err && err.message) || t('errorRequestFailed')), errorDetail: failureDetail(t, err && err.detail) } : prev)
     })
   }
 
@@ -908,6 +953,7 @@ function TranslatorRoot(props) {
       bodyChildren.push(react.createElement('div', { key: 'loading' }, t('translating')))
     } else if (card.status === 'error') {
       bodyChildren.push(react.createElement('div', { key: 'err', 'data-dsh-translator-error': '' }, card.error))
+      if (card.errorDetail) bodyChildren.push(react.createElement('div', { key: 'errdetail', 'data-dsh-translator-error-detail': '' }, card.errorDetail))
     } else if (card.result) {
       bodyChildren.push(react.createElement('div', { key: 'ok' }, card.result.text))
     }
@@ -934,7 +980,7 @@ function TranslatorRoot(props) {
       footChildren.push(react.createElement('span', { key: 'trunc' }, t('truncated')))
     }
     if (card.status === 'error') {
-      footChildren.push(react.createElement('button', { key: 'retry', 'data-dsh-translator-act': '', onClick: () => translateText(card.text) }, t('retry')))
+      footChildren.push(react.createElement('button', { key: 'retry', 'data-dsh-translator-act': '', onClick: () => translateText(card.text, { retry: true }) }, t('retry')))
     }
     footChildren.push(react.createElement('div', { key: 'actions', 'data-dsh-translator-actions': '' },
       react.createElement('button', { 'data-dsh-translator-pin': card.pinned ? 'on' : 'off', title: card.pinned ? t('unpin') : t('pin'), onClick: () => setCard(prev => prev ? { ...prev, pinned: !prev.pinned } : prev) }, react.createElement(PinIcon, { filled: card.pinned === true })),

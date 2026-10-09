@@ -19,7 +19,7 @@ import { Config } from '../src/index.js'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const source = readFileSync(join(root, 'client/core.js'), 'utf8')
 
-const EXPORTS = '{ apply, inject, settingsOps, PACKAGE_NAME, SETTINGS_NS, TranslatorSettings, SettingsForm, SettingsSummary, TranslatorRoot, I18N, CONFIG_PATHS, API_PROVIDER_IDS }'
+const EXPORTS = '{ apply, inject, settingsOps, PACKAGE_NAME, SETTINGS_NS, TranslatorSettings, SettingsForm, SettingsSummary, TranslatorRoot, I18N, CONFIG_PATHS, API_PROVIDER_IDS, failureDetail }'
 
 /** The section the Host resolves for this entry: schema defaults with no override. */
 const SAMPLE_VALUE = {
@@ -455,4 +455,34 @@ test('client: the summary names the engine that will actually run', () => {
   modelCore.SettingsSummary({ view: 'summary', form: makeForm(value), t: seat(modelCore, 'en') })
   // With no model chosen the model engine falls back to the session default.
   assert.ok(renderedText(model).some(text => text.includes('Session default')))
+})
+
+test('client: a failed chain is explained through the dictionary, not the provider text', () => {
+  const core = loadCore(fakeDocument())
+  const t = key => core.I18N.zh[key]
+
+  // A fully benched chain is named outright: nothing was even asked, so the
+  // generic "endpoints are unavailable" would be actively misleading.
+  assert.equal(
+    core.failureDetail(t, [
+      { provider: 'tencent', reason: 'benched', error: 'benched after an earlier failure' },
+      { provider: 'bing', reason: 'benched', error: 'benched after an earlier failure' },
+    ]),
+    core.I18N.zh.errorApiBenched,
+  )
+
+  // A mixed chain names each provider with a translated reason, and never
+  // leaks the raw English `error` string the Host attached.
+  const mixed = core.failureDetail(t, [
+    { provider: 'tencent', reason: 'failed', error: 'tencent: HTTP 500' },
+    { provider: 'mymemory', reason: 'too-long', error: 'text exceeds 500 bytes' },
+  ])
+  assert.match(mixed, /腾讯交互翻译: 请求失败/)
+  assert.match(mixed, /MyMemory: 文本过长/)
+  assert.equal(mixed.includes('HTTP 500'), false)
+
+  // Anything that is not a per-attempt record yields no second line at all.
+  assert.equal(core.failureDetail(t, undefined), null)
+  assert.equal(core.failureDetail(t, 'provider exploded'), null)
+  assert.equal(core.failureDetail(t, []), null)
 })
