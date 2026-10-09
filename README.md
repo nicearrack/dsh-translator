@@ -23,6 +23,8 @@ https://github.com/nicearrack/dsh-translator
 
 To remove it later, uninstall it from that same page.
 
+To update, uninstall it and add it again — the npm package name and the GitHub address both resolve to the latest release. The new version takes effect once DSH restarts.
+
 ## Usage
 
 Select text → click the floating **translate** button → the translation card appears. Drag the card by its header, or pin it so it can't be dismissed by accident. Click the translation (or the source text, or an error message) to copy it.
