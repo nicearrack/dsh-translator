@@ -10,8 +10,12 @@ dist/
 # local pnpm reproduction of a git install
 .pnpm-repro/
 
-# stability harness (playwright runtime, downloaded browsers, reports)
+# archived dev scratch. stability/ was removed on 2026-10-09: its two useful
+# scripts moved into tests/ and scripts/, its probe scripts and 676 MB of
+# playwright runtimes are gone. The tarball is a local restore point, not part
+# of the package.
 stability/
+.stability-*.tar.gz
 
 # playwright MCP snapshots/console logs from a browser probe
 .playwright-mcp/

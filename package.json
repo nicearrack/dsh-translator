@@ -26,7 +26,9 @@
     "prepublishOnly": "node scripts/build.js",
     "test": "node --test \"tests/*.test.mjs\"",
     "test:host": "node scripts/host-sim.mjs",
-    "check": "node --check src/index.js && node --check src/free-translate.js && node -e \"const fs=require('fs');new Function(fs.readFileSync('client/core.js','utf8'));console.log('syntax OK')\" && node scripts/verify-build.js"
+    "test:smoke": "node tests/client.smoke.mjs",
+    "screenshots": "node scripts/regenerate-screenshots.js",
+    "check": "node --check src/index.js && node --check src/free-translate.js && node --check tests/client.smoke.mjs && node --check scripts/regenerate-screenshots.js && node -e \"const fs=require('fs');new Function(fs.readFileSync('client/core.js','utf8'));console.log('syntax OK')\" && node scripts/verify-build.js"
   },
   "keywords": [
     "dsh",
