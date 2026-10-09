@@ -22,6 +22,10 @@ node_modules/
 # playwright MCP page snapshots and console logs from a browser probe
 .playwright-mcp/
 
+# npm's cache when it is redirected into the repo (the sandbox cannot write
+# ~/.npm, so publish/pack run with --cache ./.npm-cache)
+.npm-cache/
+
 # editors / OS
 .DS_Store
 *.swp

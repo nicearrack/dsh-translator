@@ -1,6 +1,6 @@
 {
   "name": "@nicearrack/dsh-translator",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Youdao-style word-selection translation for the DSH web GUI. Select text anywhere, click the floating button, get a translation — by default through keyless public translation endpoints, with the harness's own LLM as the other engine. 有道风格划词翻译：DSH Web GUI 里划选文本即现悬浮翻译按钮，默认走免 Key 的公共翻译接口，也可切换为 harness 自带大模型。",
   "type": "module",
   "main": "lib/index.js",
