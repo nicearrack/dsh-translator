@@ -11,8 +11,12 @@
 // Usage:
 //   node scripts/regenerate-screenshots.js "http://127.0.0.1:3210/?token=XXXX"
 //
-// CJK glyphs come from the workspace LXGWWenKai font via fontconfig.conf at the
-// package root, so the crops render Chinese instead of tofu boxes.
+// CJK glyphs would otherwise render as tofu boxes. The 25 MB WenKai font lives
+// in .fonts/ and is NOT committed (.fonts/ is gitignored), so this generates a
+// fontconfig pointing at it, by path relative to this script. When the font is
+// absent, nothing is set and the browser falls back to the system's own CJK
+// font — the crops degrade, they do not fail.
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -37,15 +41,44 @@ try {
 }
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const FONT_CONFIG = join(ROOT, 'fontconfig.conf')
+const FONT_DIR = join(ROOT, '.fonts')
+const FONT_CACHE = join(ROOT, '.fonts-cache')
 const OUT = join(ROOT, 'screenshots')
 const WIDTH = 815
 
+/**
+ * The `FONTCONFIG_FILE` env chromium should get, or nothing when there is no
+ * in-repo font to point at.
+ *
+ * Generating this here replaces a machine-specific fontconfig.conf that was
+ * gitignored anyway: it hard-coded one absolute checkout path, so a clone
+ * anywhere else silently rendered every CJK glyph as an empty box.
+ */
+function fontConfigEnv() {
+  if (!existsSync(FONT_DIR)) return {}
+  mkdirSync(FONT_CACHE, { recursive: true })
+  const escape = (value) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const file = join(FONT_CACHE, 'fontconfig.conf')
+  writeFileSync(file, `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
+  <dir>${escape(FONT_DIR)}</dir>
+  <cachedir>${escape(FONT_CACHE)}</cachedir>
+</fontconfig>
+`)
+  return { FONTCONFIG_FILE: file }
+}
+
 async function main() {
+  // `channel: 'chromium'` rather than the default headless shell: it reuses a
+  // chromium that is already installed (a DSH checkout has one) and renders
+  // exactly what the user sees, which is the point of a screenshot.
   const browser = await chromium.launch({
+    channel: 'chromium',
     headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage'],
-    env: { ...process.env, FONTCONFIG_FILE: FONT_CONFIG },
+    env: { ...process.env, ...fontConfigEnv() },
   })
   const page = await browser.newPage({ viewport: { width: 1120, height: 820 } })
   const errs = []
@@ -153,21 +186,28 @@ async function main() {
   } else console.error('button did not appear (3)')
 
   // ── 4. config.png ───────────────────────────────────────────────────────
-  // The settings form is a page in the Plugins list rather than a card, so the
-  // crop targets the form container itself.
+  // The settings form is a page in the Plugins list, not a card. Reach it with
+  // 插件 → the bundle's own entry. Do NOT click 设置 first: that opens the
+  // general Settings modal on top of it, and the crop would capture the modal
+  // instead of the plugin form.
+  // The viewport is narrowed first so the form lands near the same ~815px width
+  // the conversation crops above use.
   await page.keyboard.press('Escape'); await page.waitForTimeout(400)
+  await page.setViewportSize({ width: 1120, height: 820 })
+  await page.waitForTimeout(600)
   const nav = async (text) => page.evaluate((t) => {
     const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
     let n
     while ((n = w.nextNode())) if ((n.textContent || '').trim() === t) { let el = n.parentElement; for (let i = 0; i < 6 && el; i++) { if (el.onclick || el.tagName === 'BUTTON' || el.getAttribute('role') === 'button' || el.getAttribute('role') === 'menuitem') break; el = el.parentElement } if (el) { el.click(); return true } }
     return false
   }, text)
-  await nav('设置'); await page.waitForTimeout(2000)
   await nav('插件'); await page.waitForTimeout(2500)
-  await nav('划词翻译'); await page.waitForTimeout(1500)
+  await nav('划词翻译'); await page.waitForTimeout(1800)
   const form = await page.evaluate(() => document.querySelector('[data-dsh-translator-settings]')?.getBoundingClientRect().toJSON() || null)
   if (form) {
-    const clip = { x: Math.max(0, form.x - 16), y: Math.max(0, form.y - 24), width: Math.min(WIDTH + 16, Math.min(831, 1400 - Math.max(0, form.x - 16))), height: form.height + 48 }
+    // Full form width plus a margin: the select controls span the whole form,
+    // so a narrower crop would slice their right edges off.
+    const clip = { x: Math.max(0, form.x - 16), y: Math.max(0, form.y - 28), width: Math.min(WIDTH, form.width + 32), height: form.height + 56 }
     await page.screenshot({ path: join(OUT, 'config.png'), clip })
     console.log('saved config.png', JSON.stringify(clip))
   } else {

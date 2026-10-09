@@ -100,7 +100,12 @@ const cardState = (page) => page.evaluate(() => {
 })
 
 async function main() {
-  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] })
+  // `channel: 'chromium'` uses the full chromium build rather than the stripped
+  // headless shell Playwright reaches for by default. That matters here: a
+  // machine that already has a chromium (a DSH checkout ships one) can run this
+  // with no extra download, and the full build renders the UI and its CSS the
+  // way a user actually sees it.
+  const browser = await chromium.launch({ channel: 'chromium', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] })
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
   const errors = []
   page.on('pageerror', e => errors.push('pageerror: ' + String(e).slice(0, 160)))
@@ -159,10 +164,13 @@ async function main() {
   // Which fields exist depends on the engine, and a fresh profile defaults to
   // the free-API engine: engine, primary language, translation service and
   // timeout. The model controls only appear once the engine is switched.
-  await clickText(page, '设置'); await page.waitForTimeout(2000)
+  //
+  // Go straight to the Plugins list. Clicking 设置 first would open the general
+  // Settings modal over the plugin page — the DOM reads below would still pass,
+  // since they do not care about z-order, but the form would be hidden.
   await clickText(page, '插件'); await page.waitForTimeout(2500)
   // The bundle's own page in the Plugins list, keyed by its locale title.
-  await clickText(page, '划词翻译'); await page.waitForTimeout(1500)
+  await clickText(page, '划词翻译'); await page.waitForTimeout(1800)
   const reached = await page.waitForFunction(
     () => document.querySelectorAll('[data-dsh-translator-field-label]').length > 0,
     { timeout: 15000 },

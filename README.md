@@ -115,25 +115,6 @@ dsh plugin --profile web remove @nicearrack/dsh-translator
 
 Restart the instance (`dsh --profile web`) for the removal to take effect.
 
-## Development
-
-`npm test` runs the Node suites (`tests/host.test.mjs`, `tests/client.test.mjs`) — no browser, no network, a couple of seconds. They drive the packaged Host half over its real `/api` routes with a mocked `fetch`, and evaluate `client/core.js` against a stub React.
-
-That stub is the limit worth knowing about: it records elements but never invokes a nested component, so those suites cannot see real rendering, the selection → button → card interaction, drag/pin, CSS, or an actual authenticated round trip. `tests/client.smoke.mjs` covers that layer in a real browser. It is **opt-in**, because it needs things `npm test` must not:
-
-```sh
-npm i -D playwright && npx playwright install chromium
-
-# a DSH instance carrying this plugin, e.g.
-pnpm dsh web --patch /path/to/dsh-translator/dev.patch.yml --port 3210 --no-open
-
-npm run test:smoke -- "http://127.0.0.1:3210/?token=XXXX"
-```
-
-It is read-only: it never saves, switches locale or writes settings — it types into a draft to watch the override badge react, then closes the page.
-
-`npm run screenshots -- "<url with token>"` regenerates `screenshots/*.png` against a session named 「截图专用」; it needs the same playwright prerequisite.
-
 ## License
 
 [MIT](LICENSE)

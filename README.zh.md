@@ -112,25 +112,6 @@ dsh plugin --profile web remove @nicearrack/dsh-translator
 
 重启实例（`dsh --profile web`）后生效。
 
-## 开发
-
-`npm test` 跑的是 Node 套件（`tests/host.test.mjs`、`tests/client.test.mjs`）—— 不用浏览器、不联网，两秒内跑完。它们用 mock 的 `fetch` 驱动打包后的 Host 半边走真实的 `/api` 路由，并用一个**假 React** 求值 `client/core.js`。
-
-这个「假 React」就是它的边界：它只记录 element，**从不调用嵌套组件**，所以看不到真实渲染、划选 → 按钮 → 卡片的交互、拖拽/固定、CSS，也走不了真正的认证往返。这一层由 `tests/client.smoke.mjs` 在真实浏览器里覆盖。它是**按需运行**的，因为它需要一些 `npm test` 不该依赖的东西：
-
-```sh
-npm i -D playwright && npx playwright install chromium
-
-# 另开一个加载了本插件的 DSH 实例，例如
-pnpm dsh web --patch /path/to/dsh-translator/dev.patch.yml --port 3210 --no-open
-
-npm run test:smoke -- "http://127.0.0.1:3210/?token=XXXX"
-```
-
-它是只读的：不保存、不切语言、不写设置 —— 只会往草稿里输入以观察「已覆盖」标记的实时反应，然后关掉页面。
-
-`npm run screenshots -- "<带 token 的 url>"` 用于重新生成 `screenshots/*.png`，它针对一个名为「截图专用」的会话；需要同样的 playwright 前置条件。
-
 ## License
 
 [MIT](LICENSE)
