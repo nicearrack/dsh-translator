@@ -16,6 +16,7 @@
 // fontconfig pointing at it, by path relative to this script. When the font is
 // absent, nothing is set and the browser falls back to the system's own CJK
 // font — the crops degrade, they do not fail.
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -42,6 +43,7 @@ try {
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const FONT_DIR = join(ROOT, '.fonts')
+const FONT_FAMILY = 'LXGW WenKai'
 const FONT_CACHE = join(ROOT, '.fonts-cache')
 const OUT = join(ROOT, 'screenshots')
 const WIDTH = 815
@@ -50,9 +52,19 @@ const WIDTH = 815
  * The `FONTCONFIG_FILE` env chromium should get, or nothing when there is no
  * in-repo font to point at.
  *
- * Generating this here replaces a machine-specific fontconfig.conf that was
- * gitignored anyway: it hard-coded one absolute checkout path, so a clone
- * anywhere else silently rendered every CJK glyph as an empty box.
+ * Two things are required for the font to actually be used, and skipping either
+ * leaves the crops silently rendered in the system CJK font:
+ *
+ *   1. a `match` rule that PREPENDS the family. A bare `<dir>` only adds the
+ *      file to the pool; the system font still wins the match.
+ *   2. `fc-cache -f` against this exact config. fontconfig keeps per-directory
+ *      caches and will not notice a newly added `<dir>` until they are rebuilt,
+ *      so without the rescan even a correct rule does nothing.
+ *
+ * The rule is deliberately global rather than scoped with a `lang` test:
+ * measured on this machine, `lang contains zh` also matches `lang=en`, `ja` and
+ * `ko`, so the scope would be a fiction. Every screenshot therefore has to be
+ * regenerated together, or they will differ in typeface.
  */
 function fontConfigEnv() {
   if (!existsSync(FONT_DIR)) return {}
@@ -65,8 +77,18 @@ function fontConfigEnv() {
   <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
   <dir>${escape(FONT_DIR)}</dir>
   <cachedir>${escape(FONT_CACHE)}</cachedir>
+  <match target="pattern">
+    <edit name="family" mode="prepend" binding="strong"><string>${FONT_FAMILY}</string></edit>
+  </match>
 </fontconfig>
 `)
+  const cached = spawnSync('fc-cache', ['-f'], {
+    env: { ...process.env, FONTCONFIG_FILE: file },
+    stdio: 'ignore',
+  })
+  if (cached.error) {
+    console.error('note: fc-cache not available, the in-repo font may be ignored:', cached.error.message)
+  }
   return { FONTCONFIG_FILE: file }
 }
 

@@ -10,11 +10,9 @@ dist/
 # local pnpm reproduction of a git install
 .pnpm-repro/
 
-# archived dev scratch. stability/ was removed on 2026-10-09: its two useful
-# scripts moved into tests/ and scripts/, its probe scripts and 676 MB of
-# playwright runtimes are gone. The tarball is a local restore point, not part
-# of the package.
-stability/
+# restore point for the dev scratch removed on 2026-10-09 (stability/):
+# its two useful scripts moved into tests/ and scripts/, the probe scripts and
+# 676 MB of playwright runtimes are gone. Not part of the package.
 .stability-*.tar.gz
 
 # playwright MCP snapshots/console logs from a browser probe
@@ -25,11 +23,16 @@ stability/
 *.swp
 .idea/
 .vscode/
-.e2e-home/
 .npm-tmp/
+
+# isolated DSH_HOME used to drive the browser suites against a throwaway
+# instance; it holds a copy of a profile and must never be committed
+.e2e-home/
+
+# the in-repo screenshot font (25 MB) and the fontconfig the screenshot tool
+# generates from it at run time
 .fonts/
 .fonts-cache/
-fontconfig.conf
 
 # credentials — a project-level .npmrc can carry an _authToken, so it must never
 # be staged by a `git add -A`. npm loads this one as the "project" config; there
