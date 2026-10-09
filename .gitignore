@@ -1,21 +1,25 @@
 # dependencies
 node_modules/
-dist/
 
 # NOTE: lib/ is deliberately NOT ignored. A git-hosted install is packed from
 # the repository and never runs a build script, so the built Host and Client
 # halves have to be committed. `npm run verify:build` (part of `npm run check`)
 # fails when they drift from src/ and client/.
 
-# local pnpm reproduction of a git install
-.pnpm-repro/
+# credentials — a project-level .npmrc can carry an _authToken, so it must never
+# be staged by a `git add -A`
+.npmrc
 
-# restore point for the dev scratch removed on 2026-10-09 (stability/):
-# its two useful scripts moved into tests/ and scripts/, the probe scripts and
-# 676 MB of playwright runtimes are gone. Not part of the package.
-.stability-*.tar.gz
+# the in-repo screenshot font (25 MB) and the fontconfig the screenshot tool
+# generates from it at run time
+.fonts/
+.fonts-cache/
 
-# playwright MCP snapshots/console logs from a browser probe
+# an isolated DSH_HOME for driving the browser suites against a throwaway
+# instance; it holds a copy of a profile and must never be committed
+.e2e-home/
+
+# playwright MCP page snapshots and console logs from a browser probe
 .playwright-mcp/
 
 # editors / OS
@@ -23,21 +27,3 @@ dist/
 *.swp
 .idea/
 .vscode/
-.npm-tmp/
-
-# isolated DSH_HOME used to drive the browser suites against a throwaway
-# instance; it holds a copy of a profile and must never be committed
-.e2e-home/
-
-# the in-repo screenshot font (25 MB) and the fontconfig the screenshot tool
-# generates from it at run time
-.fonts/
-.fonts-cache/
-
-# credentials — a project-level .npmrc can carry an _authToken, so it must never
-# be staged by a `git add -A`. npm loads this one as the "project" config; there
-# is no .npmrc.local convention to ignore.
-.npmrc
-
-# machine-specific dev overlay (absolute paths)
-dev.patch.yml

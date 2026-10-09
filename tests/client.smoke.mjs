@@ -12,7 +12,11 @@
 //   1. playwright + a chromium build
 //        npm i -D playwright && npx playwright install chromium
 //   2. a running DSH instance with this plugin loaded, and its URL with a token
-//        pnpm dsh web --patch /path/to/dsh-translator/dev.patch.yml --port 3210 --no-open
+//        dsh plugin --profile web add /path/to/dsh-translator
+//        dsh web --port 3210 --no-open        (prints the URL, token included)
+//      Install it as a real plugin row rather than through a --patch overlay:
+//      an overlay row gets a different id, so the settings namespace this suite
+//      drives would not exist and step 4/5 would fail.
 //
 // Usage:
 //   node tests/client.smoke.mjs "http://127.0.0.1:3210/?token=XXXX"
