@@ -28,9 +28,9 @@ stability/
 fontconfig.conf
 
 # credentials — a project-level .npmrc can carry an _authToken, so it must never
-# be staged by a `git add -A`
+# be staged by a `git add -A`. npm loads this one as the "project" config; there
+# is no .npmrc.local convention to ignore.
 .npmrc
-.npmrc.local
 
 # machine-specific dev overlay (absolute paths)
 dev.patch.yml
