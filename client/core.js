@@ -725,16 +725,19 @@ function TranslatorRoot(props) {
       if (dragging) return
       if (isInsideRoot(e.target)) return
       btnSuppressed = false
+      // A pinned card owns its in-flight translation: clicking elsewhere must
+      // not kill the run the user pinned to keep. Escape already behaves this
+      // way (it returns before cancelLoadingCard when the card is pinned).
+      const pinned = Boolean(stateRef.card && stateRef.card.pinned)
+      if (!pinned) cancelLoadingCard(stateRef.card)
       const info = currentSelection()
       if (!info) {
-        cancelLoadingCard(stateRef.card)
         setBtn(null)
         stateRef.btnText = null
-        if (!stateRef.card || !stateRef.card.pinned) setCard(null)
+        if (!pinned) setCard(null)
         return
       }
-      cancelLoadingCard(stateRef.card)
-      if (!stateRef.card || !stateRef.card.pinned) setCard(null)
+      if (!pinned) setCard(null)
       refreshButton()
     }
 
@@ -863,6 +866,11 @@ function TranslatorRoot(props) {
       }
     }).catch((err) => {
       if (unmounted || id !== requestSeq) return
+      // Cancellation is something this client asked for, not a failure to
+      // report. `cancelled` deliberately has no ERROR_KEY entry, so rendering
+      // it through errorText would fall through to err.message and print the
+      // raw internal token on the card.
+      if (err && err.code === 'cancelled') return
       setCard(prev => prev ? { ...prev, status: 'error', error: errorText(err && err.code, (err && err.message) || t('errorRequestFailed')) } : prev)
     })
   }
